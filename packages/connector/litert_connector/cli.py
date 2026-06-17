@@ -24,9 +24,30 @@ async def run_connector(args):
     else:
         models = [{"name": "gemma4-12b", "max_sessions": 3}]
 
+    async def on_ice_candidate(room_id: str, candidate: dict):
+        await client.send({
+            "type": "ice_candidate",
+            "room_id": room_id,
+            "candidate": candidate,
+            "from": "node",
+        })
+
     responder = WebRTCResponder(
         local_server_url=f"http://127.0.0.1:{args.server_port}",
+        on_ice_candidate=on_ice_candidate,
     )
+
+    pending_rooms: dict[str, asyncio.Task] = {}
+
+    async def _room_timeout(room_id: str):
+        await asyncio.sleep(30)
+        if room_id in pending_rooms:
+            del pending_rooms[room_id]
+            try:
+                await client.send({"type": "close_room", "room_id": room_id})
+                logger.info(f"Room {room_id} closed due to timeout (no SDP offer)")
+            except Exception:
+                pass
 
     async def handle_message(msg):
         msg_type = msg.get("type", "")
@@ -35,11 +56,16 @@ async def run_connector(args):
             room_id = msg.get("room_id")
             model = msg.get("model", "gemma4-12b")
             logger.info(f"New room {room_id} for model {model}")
+            task = asyncio.create_task(_room_timeout(room_id))
+            pending_rooms[room_id] = task
 
         elif msg_type == "sdp_offer":
             room_id = msg.get("room_id")
             sdp = msg.get("sdp")
             fingerprint = msg.get("fingerprint", "")
+            if room_id in pending_rooms:
+                pending_rooms[room_id].cancel()
+                del pending_rooms[room_id]
             logger.info(f"Received SDP offer for room {room_id}")
 
             answer_data, _ = await responder.handle_offer(room_id, sdp)
@@ -58,6 +84,9 @@ async def run_connector(args):
 
         elif msg_type == "room_closed":
             room_id = msg.get("room_id")
+            if room_id in pending_rooms:
+                pending_rooms[room_id].cancel()
+                del pending_rooms[room_id]
             logger.info(f"Room {room_id} closed")
 
     client = SignalingClient(

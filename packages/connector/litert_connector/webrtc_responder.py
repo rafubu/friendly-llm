@@ -18,11 +18,13 @@ class WebRTCResponder:
         local_server_url: str = "http://127.0.0.1:11434",
         on_connection: Callable | None = None,
         on_disconnection: Callable | None = None,
+        on_ice_candidate: Callable | None = None,
         max_concurrent_requests: int = 3,
     ):
         self.local_server_url = local_server_url
         self.on_connection = on_connection
         self.on_disconnection = on_disconnection
+        self.on_ice_candidate = on_ice_candidate
         self._peers: dict[str, RTCPeerConnection] = {}
         self._data_channels: dict[str, Any] = {}
         self._lock = asyncio.Lock()
@@ -38,6 +40,16 @@ class WebRTCResponder:
             await self._http_client.aclose()
             self._http_client = None
 
+    def _setup_ice_handlers(self, pc, room_id: str):
+        @pc.on("icecandidate")
+        async def on_ice_candidate(event):
+            if event.candidate and self.on_ice_candidate:
+                await self.on_ice_candidate(room_id, {
+                    "candidate": event.candidate.to_dict() if hasattr(event.candidate, "to_dict") else str(event.candidate),
+                    "sdpMid": event.candidate.sdpMid,
+                    "sdpMLineIndex": event.candidate.sdpMLineIndex,
+                })
+
     async def create_offer(self, room_id: str) -> tuple[dict, str]:
         pc = RTCPeerConnection(
             configuration=RTCConfiguration([
@@ -45,6 +57,8 @@ class WebRTCResponder:
                 RTCIceServer(urls="stun:stun1.l.google.com:19302"),
             ])
         )
+
+        self._setup_ice_handlers(pc, room_id)
 
         @pc.on("datachannel")
         async def on_datachannel(channel):
@@ -162,6 +176,8 @@ class WebRTCResponder:
                 RTCIceServer(urls="stun:stun1.l.google.com:19302"),
             ])
         )
+
+        self._setup_ice_handlers(pc, room_id)
 
         @pc.on("datachannel")
         async def on_datachannel(channel):
