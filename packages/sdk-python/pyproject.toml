@@ -1,0 +1,24 @@
+[project]
+name = "litert-sdk"
+version = "0.1.0"
+description = "Python SDK for LiteRT-Ollama P2P client"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.27.0",
+    "websockets>=12.0",
+]
+
+[project.optional-dependencies]
+cli = [
+    "prompt-toolkit>=3.0.0",
+]
+webrtc = [
+    "aiortc>=1.9.0",
+]
+
+[project.scripts]
+litert-chat = "litert_sdk.cli:main"
+
+[build-system]
+requires = ["setuptools>=64.0"]
+build-backend = "setuptools.build_meta"

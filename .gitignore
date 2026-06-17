@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# Environment
+.env
+.env.local
+venv/
+.venv/
+
+# Database
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+engram_data/
+graph_cache/
+logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node / JS
+node_modules/
+dist/litert-sdk*.js
+packages/sdk-js/dist/
+
+# Test / Coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Models (too large for git)
+*.litertlm
+*.tflite
+*.bin
+sentencepiece.model
+dxc_preview_2026_04_22/
+
+# Build artifacts
+*.spec
+*.exe

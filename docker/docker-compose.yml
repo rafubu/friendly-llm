@@ -1,0 +1,37 @@
+version: "3.9"
+
+services:
+  signaling:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.signaling
+    ports:
+      - "9876:9876"
+      - "3478:3478/udp"
+    environment:
+      - LITERT_SIGNALING_JWT_SECRET=${JWT_SECRET:-change-me-in-production}
+      - LITERT_SIGNALING_DB_PATH=/data/signaling.db
+      - LITERT_SIGNALING_HOST=0.0.0.0
+      - LITERT_SIGNALING_PORT=9876
+      - LITERT_SIGNALING_RATE_LIMIT_PER_MINUTE=60
+    volumes:
+      - signaling-data:/data
+    restart: unless-stopped
+
+  turn:
+    image: coturn/coturn:latest
+    ports:
+      - "3478:3478/udp"
+      - "3478:3478/tcp"
+    command: >
+      -n --realm=litert-ollama
+      --listening-port=3478
+      --min-port=49152 --max-port=65535
+      --fingerprint
+      --lt-cred-mech
+      --user=${TURN_USER:-litert}:${TURN_PASSWORD:-changeme}
+      --no-stdout-log
+    restart: unless-stopped
+
+volumes:
+  signaling-data:

@@ -1,0 +1,20 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    coturn \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY packages/signaling/ /app/packages/signaling/
+RUN pip install -e /app/packages/signaling
+
+RUN mkdir -p /data /etc/coturn
+
+EXPOSE 9876
+EXPOSE 3478/udp
+
+ENV LITERT_SIGNALING_JWT_SECRET=change-me-in-production
+ENV LITERT_SIGNALING_DB_PATH=/data/signaling.db
+
+CMD ["litert-signaling", "serve", "--host", "0.0.0.0", "--port", "9876"]

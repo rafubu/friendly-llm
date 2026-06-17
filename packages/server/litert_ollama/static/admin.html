@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LiteRT-Ollama Admin</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0d1117;color:#c9d1d9;padding:20px}
+.header{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;padding-bottom:16px;border-bottom:1px solid #30363d}
+.header h1{font-size:18px;color:#58a6ff}
+.header .status{font-size:12px;color:#8b949e}
+.header .status .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+.dot-green{background:#3fb950}
+.dot-red{background:#da3633}
+.dot-yellow{background:#d29922}
+.tabs{display:flex;gap:4px;margin-bottom:20px;border-bottom:1px solid #30363d}
+.tab{padding:8px 16px;cursor:pointer;font-size:13px;color:#8b949e;border-bottom:2px solid transparent;transition:all .2s}
+.tab:hover{color:#c9d1d9}
+.tab.active{color:#58a6ff;border-bottom-color:#58a6ff}
+.tab-content{display:none}
+.tab-content.active{display:block}
+.card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px;margin-bottom:16px}
+.card h3{font-size:13px;color:#8b949e;margin-bottom:12px;text-transform:uppercase;letter-spacing:.5px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+.stat{text-align:center;padding:12px}
+.stat .value{font-size:28px;font-weight:600;color:#c9d1d9}
+.stat .label{font-size:11px;color:#8b949e;margin-top:4px}
+.stat .sub{font-size:11px;color:#484f58;margin-top:2px}
+.bar{height:8px;background:#21262d;border-radius:4px;margin-top:8px;overflow:hidden}
+.bar-fill{height:100%;border-radius:4px;transition:width .5s}
+.bar-green .bar-fill{background:#3fb950}
+.bar-yellow .bar-fill{background:#d29922}
+.bar-red .bar-fill{background:#da3633}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;padding:8px;color:#8b949e;border-bottom:1px solid #30363d;font-weight:500}
+td{padding:8px;border-bottom:1px solid #21262d}
+.btn{display:inline-block;padding:4px 10px;border-radius:4px;font-size:11px;cursor:pointer;border:1px solid #30363d;background:#21262d;color:#c9d1d9;transition:all .2s}
+.btn:hover{background:#30363d;border-color:#484f58}
+.btn-danger{color:#da3633;border-color:#da3633}
+.btn-danger:hover{background:#da3633;color:#fff}
+.badge{display:inline-block;padding:2px 6px;border-radius:3px;font-size:10px;font-weight:500}
+.badge-green{background:#3fb95022;color:#3fb950}
+.badge-red{background:#da363322;color:#da3633}
+.badge-yellow{background:#d2992222;color:#d29922}
+.ml-2{margin-left:8px}
+.mt-2{margin-top:12px}
+.text-muted{color:#484f58;font-size:11px}
+@media(max-width:600px){.grid{grid-template-columns:1fr 1fr}.header{flex-direction:column;align-items:flex-start;gap:8px}}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>🔧 LiteRT-Ollama Admin</h1>
+  <div class="status" id="statusBar"><span class="dot dot-yellow"></span>Loading...</div>
+</div>
+
+<div class="tabs">
+  <div class="tab active" data-tab="dashboard">📊 Dashboard</div>
+  <div class="tab" data-tab="sessions">💬 Sessions</div>
+  <div class="tab" data-tab="models">📦 Models</div>
+  <div class="tab" data-tab="config">⚙️ Config</div>
+</div>
+
+<!-- DASHBOARD -->
+<div class="tab-content active" id="tab-dashboard">
+  <div class="grid" id="dashStats"></div>
+  <div class="grid" style="grid-template-columns:1fr 1fr">
+    <div class="card" id="gpuCard"><h3>GPU</h3><div class="text-muted">Loading...</div></div>
+    <div class="card" id="queueCard"><h3>Queue</h3><div class="text-muted">Loading...</div></div>
+  </div>
+  <div class="card" id="modelListCard"><h3>Loaded Models</h3><div class="text-muted">Loading...</div></div>
+</div>
+
+<!-- SESSIONS -->
+<div class="tab-content" id="tab-sessions">
+  <div class="card">
+    <h3>Active Sessions</h3>
+    <div id="sessionsTable"><div class="text-muted">Loading...</div></div>
+  </div>
+</div>
+
+<!-- MODELS -->
+<div class="tab-content" id="tab-models">
+  <div class="card">
+    <h3>All Models</h3>
+    <div id="modelsTable"><div class="text-muted">Loading...</div></div>
+  </div>
+</div>
+
+<!-- CONFIG -->
+<div class="tab-content" id="tab-config">
+  <div class="card">
+    <h3>Server Configuration</h3>
+    <div id="configTable"><div class="text-muted">Loading...</div></div>
+  </div>
+</div>
+
+<script>
+const API = '/admin/api';
+
+function $(id){return document.getElementById(id)}
+
+// Tab switching
+document.querySelectorAll('.tab').forEach(tab=>{
+  tab.addEventListener('click',()=>{
+    document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
+    tab.classList.add('active');
+    $(`tab-${tab.dataset.tab}`).classList.add('active');
+  });
+});
+
+function fmtTime(s){
+  if(s<60)return `${Math.round(s)}s`;
+  if(s<3600)return `${Math.floor(s/60)}m ${Math.round(s%60)}s`;
+  const h=Math.floor(s/3600);
+  const m=Math.floor((s%3600)/60);
+  return `${h}h ${m}m`;
+}
+
+function fmtBytes(n){
+  if(!n)return '0 B';
+  const u=['B','KB','MB','GB','TB'];
+  let i=0;
+  while(n>=1024&&i<u.length-1){n/=1024;i++}
+  return `${n.toFixed(1)} ${u[i]}`;
+}
+
+async function loadDashboard(data){
+  const gpu=data.gpu||{};
+  const sess=data.sessions||{};
+  
+  $('dashStats').innerHTML=`
+    <div class="card stat"><div class="value">${data.models.length}</div><div class="label">Models Loaded</div></div>
+    <div class="card stat"><div class="value">${sess.active||0}</div><div class="label">Active Sessions</div></div>
+    <div class="card stat"><div class="value">${gpu.free_vram_mb?fmtBytes(gpu.free_vram_mb*1024*1024):'N/A'}</div><div class="label">Free VRAM</div></div>
+    <div class="card stat"><div class="value">${fmtTime(data.server.uptime_seconds)}</div><div class="label">Uptime</div></div>
+  `;
+
+  // GPU card
+  if(gpu.available){
+    const pct=gpu.total_vram_mb?Math.round(gpu.used_vram_mb/gpu.total_vram_mb*100):0;
+    const cls=pct>85?'bar-red':pct>60?'bar-yellow':'bar-green';
+    $('gpuCard').innerHTML=`
+      <h3>GPU</h3>
+      ${gpu.gpus.map(g=>`
+        <div style="margin-bottom:8px">
+          <div style="display:flex;justify-content:space-between;font-size:12px">
+            <span>${g.name}</span>
+            <span>${fmtBytes(g.memory_used_mb*1024*1024)} / ${fmtBytes(g.memory_total_mb*1024*1024)}</span>
+          </div>
+          <div class="bar ${cls}"><div class="bar-fill" style="width:${pct}%"></div></div>
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:#8b949e;margin-top:4px">
+            <span>GPU: ${g.gpu_util_percent}%</span>
+            <span>Mem: ${g.memory_util_percent}%</span>
+            <span>Temp: ${g.temperature_celsius}°C</span>
+          </div>
+        </div>
+      `).join('')}
+    `;
+  }else{
+    $('gpuCard').innerHTML=`<h3>GPU</h3><div class="text-muted">${gpu.message||'Not available'}</div>`;
+  }
+
+  // Queue card
+  const queue=data.models.reduce((a,m)=>({active:a.active+m.queue_active,waiting:a.waiting+m.queue_waiting}),{active:0,waiting:0});
+  $('queueCard').innerHTML=`
+    <h3>Inference Queue</h3>
+    <div class="grid" style="grid-template-columns:1fr 1fr">
+      <div class="stat"><div class="value">${queue.active}</div><div class="label">Active</div></div>
+      <div class="stat"><div class="value">${queue.waiting}</div><div class="label">Waiting</div></div>
+    </div>
+  `;
+
+  // Model list
+  if(data.models.length){
+    $('modelListCard').innerHTML=`
+      <h3>Loaded Models</h3>
+      <table><thead><tr><th>Model</th><th>Refs</th><th>Queue</th><th>Idle</th></tr></thead>
+      <tbody>${data.models.map(m=>`
+        <tr><td>${m.id}</td><td>${m.ref_count}</td><td>${m.queue_active}/${m.queue_waiting}</td><td>${fmtTime(m.idle_seconds)}</td></tr>
+      `).join('')}</tbody></table>
+    `;
+  }else{
+    $('modelListCard').innerHTML=`<h3>Loaded Models</h3><div class="text-muted">No models loaded</div>`;
+  }
+}
+
+async function loadSessions(){
+  try{
+    const r=await fetch(`${API}/sessions`);
+    const d=await r.json();
+    if(!d.sessions||!d.sessions.length){
+      $('sessionsTable').innerHTML='<div class="text-muted">No active sessions</div>';
+      return;
+    }
+    $('sessionsTable').innerHTML=`
+      <table><thead><tr><th>User</th><th>Model</th><th>Type</th><th>Elapsed</th><th>Status</th><th></th></tr></thead>
+      <tbody>${d.sessions.map(s=>`
+        <tr>
+          <td>${s.user}</td>
+          <td>${s.model}</td>
+          <td><span class="badge badge-${s.type==='p2p'?'green':'yellow'}">${s.type}</span></td>
+          <td>${fmtTime(s.elapsed_seconds)}</td>
+          <td><span class="badge badge-${s.status==='active'?'green':'red'}">${s.status}</span></td>
+          <td>${s.status==='active'?`<button class="btn btn-danger" onclick="kickSession('${s.id}')">Kick</button>`:''}</td>
+        </tr>
+      `).join('')}</tbody></table>
+    `;
+  }catch(e){
+    $('sessionsTable').innerHTML=`<div class="text-muted">Error: ${e.message}</div>`;
+  }
+}
+
+async function kickSession(id){
+  if(!confirm('Kick this session?'))return;
+  try{
+    await fetch(`${API}/sessions/${id}/kick`,{method:'POST'});
+    await loadSessions();
+  }catch(e){alert(`Error: ${e.message}`)}
+}
+
+async function loadModels(){
+  try{
+    const r=await fetch(`${API}/models`);
+    const d=await r.json();
+    if(!d.models||!d.models.length){
+      $('modelsTable').innerHTML='<div class="text-muted">No models found</div>';
+      return;
+    }
+    $('modelsTable').innerHTML=`
+      <table><thead><tr><th>Model</th><th>Size</th><th>Status</th><th>Queue</th><th></th></tr></thead>
+      <tbody>${d.models.map(m=>`
+        <tr>
+          <td>${m.id}${m.modelfile?' <span class="badge badge-yellow">MF</span>':''}</td>
+          <td>${m.size_gb?`${m.size_gb}GB`:'-'}</td>
+          <td><span class="badge badge-${m.loaded?'green':'yellow'}">${m.loaded?'Loaded':'Not loaded'}</span></td>
+          <td>${m.loaded?`${m.queue_active}/${m.queue_waiting}`:'-'}</td>
+          <td>${m.loaded?`<button class="btn btn-danger" onclick="unloadModel('${m.id}')">Unload</button>`:''}</td>
+        </tr>
+      `).join('')}</tbody></table>
+    `;
+  }catch(e){
+    $('modelsTable').innerHTML=`<div class="text-muted">Error: ${e.message}</div>`;
+  }
+}
+
+async function unloadModel(id){
+  if(!confirm(`Unload model ${id}?`))return;
+  try{
+    await fetch(`${API}/models/${encodeURIComponent(id)}/unload`,{method:'POST'});
+    await loadModels();
+    await refresh();
+  }catch(e){alert(`Error: ${e.message}`)}
+}
+
+async function loadConfig(){
+  try{
+    const r=await fetch(`${API}/config`);
+    const d=await r.json();
+    $('configTable').innerHTML=`
+      <table><tbody>${Object.entries(d).map(([k,v])=>`
+        <tr><td style="font-weight:500;width:200px">${k}</td><td style="font-family:monospace">${v}</td></tr>
+      `).join('')}</tbody></table>
+    `;
+  }catch(e){
+    $('configTable').innerHTML=`<div class="text-muted">Error: ${e.message}</div>`;
+  }
+}
+
+async function refresh(){
+  try{
+    const r=await fetch(`${API}/status`);
+    const d=await r.json();
+    $('statusBar').innerHTML=`<span class="dot dot-green"></span>Running &middot; ${d.models.length} models &middot; ${d.sessions.active} sessions`;
+    await loadDashboard(d);
+  }catch(e){
+    $('statusBar').innerHTML=`<span class="dot dot-red"></span>Disconnected: ${e.message}`;
+  }
+}
+
+// Initial load + refresh every 5s
+refresh();
+loadSessions();
+loadModels();
+loadConfig();
+setInterval(refresh,5000);
+setInterval(loadSessions,5000);
+setInterval(loadModels,15000);
+</script>
+</body>
+</html>

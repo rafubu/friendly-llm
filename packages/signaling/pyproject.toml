@@ -1,0 +1,21 @@
+[project]
+name = "litert-signaling"
+version = "0.1.0"
+description = "WebRTC signaling server for LiteRT-Ollama P2P relay"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+    "pydantic>=2.0.0",
+    "python-jose[cryptography]>=3.3.0",
+    "passlib[bcrypt]>=1.7.4",
+    "python-multipart>=0.0.9",
+    "aiosqlite>=0.20.0",
+]
+
+[project.scripts]
+litert-signaling = "litert_signaling.cli:main"
+
+[build-system]
+requires = ["setuptools>=64.0"]
+build-backend = "setuptools.build_meta"

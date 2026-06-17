@@ -1,0 +1,22 @@
+{
+  "name": "litert-sdk",
+  "version": "0.1.0",
+  "description": "JavaScript SDK for LiteRT-Ollama P2P client",
+  "main": "dist/litert-sdk.cjs.js",
+  "module": "dist/litert-sdk.esm.js",
+  "browser": "dist/litert-sdk.umd.js",
+  "types": "dist/types/index.d.ts",
+  "scripts": {
+    "build": "rollup -c",
+    "dev": "rollup -c -w",
+    "test": "jest"
+  },
+  "keywords": ["litert", "ollama", "llm", "webrtc", "p2p"],
+  "license": "MIT",
+  "devDependencies": {
+    "rollup": "^4.0.0",
+    "@rollup/plugin-typescript": "^11.0.0",
+    "@rollup/plugin-terser": "^0.4.0",
+    "typescript": "^5.3.0"
+  }
+}
