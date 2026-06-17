@@ -155,6 +155,45 @@ class WebRTCResponder:
             except Exception:
                 pass
 
+    async def handle_offer(self, room_id: str, offer_sdp: dict) -> tuple[dict, str]:
+        pc = RTCPeerConnection(
+            configuration=RTCConfiguration([
+                RTCIceServer(urls="stun:stun.l.google.com:19302"),
+                RTCIceServer(urls="stun:stun1.l.google.com:19302"),
+            ])
+        )
+
+        @pc.on("datachannel")
+        async def on_datachannel(channel):
+            self._data_channels[room_id] = channel
+            await self._start_listener(room_id, channel)
+
+        @pc.on("iceconnectionstatechange")
+        async def on_ice_change():
+            logger.info(f"ICE state: {pc.iceConnectionState}")
+            if pc.iceConnectionState in ("failed", "disconnected", "closed"):
+                await self._remove_peer(room_id)
+
+        @pc.on("connectionstatechange")
+        async def on_conn_change():
+            logger.info(f"Connection state: {pc.connectionState}")
+            if pc.connectionState == "connected":
+                if self.on_connection:
+                    await self.on_connection(room_id)
+            elif pc.connectionState in ("failed", "disconnected", "closed"):
+                await self._remove_peer(room_id)
+
+        await pc.setRemoteDescription(
+            RTCSessionDescription(sdp=offer_sdp["sdp"], type=offer_sdp["type"])
+        )
+        await pc.setLocalDescription(await pc.createAnswer())
+        self._peers[room_id] = pc
+
+        sdp = {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
+        dtls_fingerprint = self._extract_fingerprint(pc.localDescription.sdp)
+
+        return {"sdp": sdp, "fingerprint": dtls_fingerprint}, room_id
+
     async def set_remote_answer(self, room_id: str, answer_sdp: dict):
         pc = self._peers.get(room_id)
         if not pc:

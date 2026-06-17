@@ -34,22 +34,21 @@ async def run_connector(args):
         if msg_type == "new_room":
             room_id = msg.get("room_id")
             model = msg.get("model", "gemma4-12b")
-
             logger.info(f"New room {room_id} for model {model}")
 
-            offer_data, _ = await responder.create_offer(room_id)
-            await client.send({
-                "type": "sdp_offer",
-                "room_id": room_id,
-                "sdp": offer_data["sdp"],
-                "fingerprint": offer_data["fingerprint"],
-            })
-
-        elif msg_type == "sdp_answer":
+        elif msg_type == "sdp_offer":
             room_id = msg.get("room_id")
             sdp = msg.get("sdp")
-            if sdp:
-                await responder.set_remote_answer(room_id, sdp)
+            fingerprint = msg.get("fingerprint", "")
+            logger.info(f"Received SDP offer for room {room_id}")
+
+            answer_data, _ = await responder.handle_offer(room_id, sdp)
+            await client.send({
+                "type": "sdp_answer",
+                "room_id": room_id,
+                "sdp": answer_data["sdp"],
+                "fingerprint": answer_data["fingerprint"],
+            })
 
         elif msg_type == "ice_candidate":
             room_id = msg.get("room_id")
