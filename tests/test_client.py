@@ -248,12 +248,13 @@ class SignalingConnector:
             })
             self.dc.send(msg)
             logger.info("Message sent, waiting for response...")
-            logger.info("Response: ", end="")
+            print("Response: ", end="", flush=True)
             # Wait for response
             try:
                 await asyncio.wait_for(self.connected.wait(), timeout=60)
             except asyncio.TimeoutError:
                 logger.warning("Response timeout after 60s")
+            print()
             return self.response_buffer
         else:
             logger.error("DataChannel not open")
