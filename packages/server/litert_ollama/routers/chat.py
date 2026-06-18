@@ -159,7 +159,7 @@ async def chat_ollama(req: ChatRequest):
                 response_text = ""
                 has_text = False
 
-                for chunk in conv.send_message_async(last_prompt):
+                async for chunk in conv.send_message_async(last_prompt):
                     text_out = "".join(
                         item.get("text", "")
                         for item in chunk.get("content", [])
@@ -243,7 +243,7 @@ async def chat_ollama(req: ChatRequest):
 
         if not req.stream:
             full_text = ""
-            for chunk in stream_generator():
+            async for chunk in stream_generator():
                 data = json.loads(chunk)
                 if not data.get("done"):
                     full_text += data.get("message", {}).get("content", "")

@@ -108,7 +108,7 @@ async def generate_endpoint(req: GenerateRequest):
                 has_context = False
                 response_text = ""
 
-                for chunk in conv.send_message_async(prompt):
+                async for chunk in conv.send_message_async(prompt):
                     text_out = "".join(
                         item.get("text", "")
                         for item in chunk.get("content", [])
@@ -171,7 +171,7 @@ async def generate_endpoint(req: GenerateRequest):
 
         if not req.stream:
             full_response = ""
-            for chunk in stream_generator():
+            async for chunk in stream_generator():
                 data = json.loads(chunk)
                 if not data.get("done"):
                     full_response += data.get("response", "")
