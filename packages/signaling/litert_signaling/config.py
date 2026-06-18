@@ -8,7 +8,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="LITERT_SIGNALING_", env_file=".env")
+    model_config = SettingsConfigDict(env_file=".env")
 
     host: str = Field(default="0.0.0.0", description="Signaling server host")
     port: int = Field(default=9876, description="Signaling server port")
@@ -17,8 +17,8 @@ class Settings(BaseSettings):
         description="Database path",
     )
     jwt_secret: str = Field(
-        default="",
-        description="JWT signing secret. Auto-generated if empty.",
+        default="dev-secret-change-in-production",
+        description="JWT signing secret. Must match Web UI's JWT_SECRET.",
     )
     rate_limit_per_minute: int = Field(default=60, description="Max WebSocket messages per minute")
 
