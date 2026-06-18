@@ -147,39 +147,33 @@ class SignalingConnector:
                     },
                 }))
 
-        # Handle DataChannel
-        @self.pc.on("datachannel")
-        async def on_datachannel(channel):
-            self.dc = channel
-            logger.info(f"DataChannel received: {channel.label}")
-
-            @channel.on("message")
-            async def on_message(msg):
-                try:
-                    data = json.loads(msg)
-                    if data.get("type") == "chunk":
-                        content = data.get("data", {}).get("message", {}).get("content", "")
-                        if content:
-                            print(content, end="", flush=True)
-                            self.response_buffer += content
-                    elif data.get("type") == "done":
-                        print()
-                        logger.info(f"Response complete ({len(self.response_buffer)} chars)")
-                        self.connected.set()
-                    elif data.get("type") == "error":
-                        logger.error(f"Model error: {data.get('error')}")
-                        self.connected.set()
-                except json.JSONDecodeError:
-                    print(msg, end="", flush=True)
-                    self.response_buffer += msg
-
-        # Create DataChannel (offerer)
+        # Create DataChannel (offerer) — THIS is the one we send/receive on
         self.dc = self.pc.createDataChannel("chat")
-        logger.info("DataChannel created")
+        logger.info(f"DataChannel created (offer side): {self.dc.label}")
 
         @self.dc.on("open")
         async def on_open():
             logger.info("DataChannel open - ready to send!")
+
+        @self.dc.on("message")
+        async def on_message(msg):
+            try:
+                data = json.loads(msg)
+                if data.get("type") == "chunk":
+                    content = data.get("data", {}).get("message", {}).get("content", "")
+                    if content:
+                        print(content, end="", flush=True)
+                        self.response_buffer += content
+                elif data.get("type") == "done":
+                    print()
+                    logger.info(f"Response complete ({len(self.response_buffer)} chars)")
+                    self.connected.set()
+                elif data.get("type") == "error":
+                    logger.error(f"Model error: {data.get('error')}")
+                    self.connected.set()
+            except json.JSONDecodeError:
+                print(msg, end="", flush=True)
+                self.response_buffer += msg
 
         # Create offer
         offer = await self.pc.createOffer()
