@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import sys
 from pathlib import Path
@@ -73,7 +74,6 @@ def _run_serve(args):
     if settings.benchmark_on_startup:
         from .benchmark import run_model_benchmarks, find_model_paths
 
-        logger = __import__("logging").getLogger(__name__)
         logger.info("Benchmark mode enabled — testing configurations...")
 
         model_paths = find_model_paths(Path(settings.models_dir))
