@@ -10,6 +10,7 @@ from fastapi.responses import StreamingResponse
 import litert_lm
 
 from ..engine_manager import registry, InferenceQueueFull
+from ..config import settings
 from ..schemas import GenerateRequest, GenerateChunk
 from ..multimodal import parse_ollama_images, needs_vision_backend, needs_audio_backend
 
@@ -60,6 +61,7 @@ async def generate_endpoint(req: GenerateRequest):
         entry = await registry.load_engine(
             req.model,
             vision_backend=litert_lm.Backend.CPU() if needs_vision else None,
+            enable_speculative_decoding=settings.enable_speculative_decoding or None,
         )
         engine_model_id = req.model
 

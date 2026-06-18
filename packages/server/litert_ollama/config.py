@@ -44,6 +44,14 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = Field(
         default=30, description="Max requests per minute per client"
     )
+    enable_speculative_decoding: bool = Field(
+        default=False,
+        description="Enable Gemma 4 lm_head speculative decoding for ~2x speedup (experimental)"
+    )
+    speculative_draft_length: int = Field(
+        default=5,
+        description="Number of draft tokens per speculative decoding step"
+    )
 
 
 settings = Settings()

@@ -21,6 +21,7 @@ def main():
     serve_p.add_argument("--backend", default=settings.backend, choices=["cpu", "gpu", "auto"], help="Inference backend")
     serve_p.add_argument("--keep-alive", default=settings.keep_alive, help="Keep alive duration")
     serve_p.add_argument("--models-dir", default=settings.models_dir, help="Models directory")
+    serve_p.add_argument("--enable-speculative-decoding", action="store_true", help="Enable spec decoding for ~2x speedup")
 
     pull_p = sub.add_parser("pull", help="Download a model from HuggingFace")
     pull_p.add_argument("model", help="Model ID (e.g., gemma-4-12B-it-litert-lm)")
@@ -64,6 +65,7 @@ def _run_serve(args):
     settings.backend = args.backend
     settings.keep_alive = args.keep_alive
     settings.models_dir = args.models_dir
+    settings.enable_speculative_decoding = args.enable_speculative_decoding
 
     import uvicorn
     from .app import app

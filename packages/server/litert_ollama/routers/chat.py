@@ -13,6 +13,7 @@ import litert_lm
 
 from ..engine_manager import registry, InferenceQueueFull
 from ..schemas import ChatRequest, ChatCompletionResponse, ChatMessage, Choice
+from ..config import settings
 from ..multimodal import (
     parse_openai_content,
     parse_ollama_message_images,
@@ -127,6 +128,7 @@ async def chat_ollama(req: ChatRequest):
             req.model,
             vision_backend=litert_lm.Backend.CPU() if vision else None,
             audio_backend=litert_lm.Backend.CPU() if audio else None,
+            enable_speculative_decoding=settings.enable_speculative_decoding or None,
         )
 
         sampler_config = None
