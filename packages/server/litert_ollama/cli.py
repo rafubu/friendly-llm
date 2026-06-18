@@ -27,6 +27,7 @@ def main():
     serve_p.add_argument("--models-dir", default=settings.models_dir, help="Models directory")
     serve_p.add_argument("--enable-speculative-decoding", action="store_true", help="Enable spec decoding for ~2x speedup")
     serve_p.add_argument("--benchmark-on-startup", action="store_true", help="Run benchmark on startup to find best config")
+    serve_p.add_argument("--force-benchmark", action="store_true", help="Re-run benchmark even if cached results exist")
 
     pull_p = sub.add_parser("pull", help="Download a model from HuggingFace")
     pull_p.add_argument("model", help="Model ID (e.g., gemma-4-12B-it-litert-lm)")
@@ -72,33 +73,54 @@ def _run_serve(args):
     settings.models_dir = args.models_dir
     settings.enable_speculative_decoding = args.enable_speculative_decoding
     settings.benchmark_on_startup = args.benchmark_on_startup
+    settings.force_benchmark = getattr(args, "force_benchmark", False)
 
     if settings.benchmark_on_startup:
-        from .benchmark import run_model_benchmarks, find_model_paths
+        from .benchmark import run_model_benchmarks, find_model_paths, load_all_results
 
-        logger.info("Benchmark mode enabled — testing configurations...")
+        logger.info("Benchmark mode — checking for cached results...")
 
         model_paths = find_model_paths(Path(settings.models_dir))
         if not model_paths:
             logger.warning("No models found for benchmarking")
         else:
             results_path = Path(settings.benchmark_results_path)
-            for model_id, model_path in model_paths.items():
-                logger.info(f"Benchmarking {model_id} ({model_path})")
-                results = run_model_benchmarks(model_id, model_path, results_path)
+            cached = load_all_results(results_path) if not settings.force_benchmark else None
+            missing_models = []
 
+            if cached:
+                for mid in model_paths:
+                    if mid not in cached:
+                        missing_models.append(mid)
+                if not missing_models:
+                    logger.info("All models have cached benchmark results — skipping benchmark")
+                    for mid, mp in model_paths.items():
+                        best = cached[mid].get("best_settings", {})
+                        tps = cached[mid].get("best_decode_tps", 0)
+                        tags = [best.get("backend", "cpu").upper()]
+                        if best.get("spec_decoding"):
+                            tags.append("SPEC")
+                        logger.info(f"  {mid}: {'+'.join(tags)} @ {tps:.1f} t/s (cached)")
+                else:
+                    logger.info(f"Cached results miss {missing_models} — benchmarking those only")
+            else:
+                if settings.force_benchmark:
+                    logger.info("--force-benchmark: re-running all benchmarks")
+                else:
+                    logger.info("No cached results — running benchmark...")
+                missing_models = list(model_paths.keys())
+
+            for mid in (missing_models or model_paths.keys()):
+                mp = model_paths[mid]
+                logger.info(f"Benchmarking {mid} ({mp})")
+                results = run_model_benchmarks(mid, mp, results_path)
                 best = results.get("best_settings", {})
-                backend = best.get("backend", "cpu")
-                spec = best.get("spec_decoding", False)
                 tps = results.get("best_decode_tps", 0)
-
-                tags = []
-                if backend == "gpu":
-                    tags.append("GPU")
-                if spec:
+                tags = [best.get("backend", "cpu").upper()]
+                if best.get("spec_decoding"):
                     tags.append("SPEC")
-                tag_str = (" + ".join(tags)) if tags else "CPU"
-                logger.info(f"  → {model_id}: {tag_str} @ {tps:.1f} t/s decode")
+                logger.info(f"  → {mid}: {'+'.join(tags)} @ {tps:.1f} t/s")
+
             logger.info(f"Results saved to {results_path}")
 
     import uvicorn

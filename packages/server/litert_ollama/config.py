@@ -56,6 +56,10 @@ class Settings(BaseSettings):
         default=False,
         description="Run benchmark on server startup to find best config"
     )
+    force_benchmark: bool = Field(
+        default=False,
+        description="Re-run benchmark even if cached results exist"
+    )
     benchmark_results_path: str = Field(
         default=str(Path.home() / ".litert-ollama" / "benchmark_results.json"),
         description="Where to save benchmark results"
