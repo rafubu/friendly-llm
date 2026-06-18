@@ -2,7 +2,7 @@
 
 Usage:
     python test_client.py --signaling ws://127.0.0.1:9876/signal
-                          --model gemma4-e2b
+                          --model gemm4-e2b
                           --message "Hola, ¿cómo estás?"
                           --jwt-secret test-secret-123
 
@@ -73,10 +73,11 @@ def create_jwt(email: str, secret: str) -> str:
 class SignalingConnector:
     """Minimal signaling client that simulates a browser's WebRTC flow."""
 
-    def __init__(self, url: str, email: str = "test@local.dev", jwt_secret: str = "test-secret-123"):
+    def __init__(self, url: str, email: str = "test@local.dev", jwt_secret: str = "test-secret-123", model_id: str = "gemm4-e2b"):
         self.url = url
         self.email = email
         self.jwt_secret = jwt_secret
+        self.model_id = model_id
         self.ws = None
         self.pc = None
         self.dc = None
@@ -241,7 +242,7 @@ class SignalingConnector:
                 "request_id": f"req_{int(time.time())}_{os.urandom(4).hex()}",
                 "endpoint": "/api/chat",
                 "payload": {
-                    "model": "gemma4-e2b",
+                    "model": self.model_id,
                     "messages": [{"role": "user", "content": text}],
                     "stream": True,
                 },
@@ -269,9 +270,9 @@ class SignalingConnector:
         self.ws = None
 
 
-async def test_direct_query(url: str, model: str = "gemma4-e2b", message: str = "Hola", jwt_secret: str = "test-secret-123"):
+async def test_direct_query(url: str, model: str = "gemm4-e2b", message: str = "Hola", jwt_secret: str = "test-secret-123"):
     """Full test: connect → select model → chat via WebRTC."""
-    client = SignalingConnector(url, jwt_secret=jwt_secret)
+    client = SignalingConnector(url, jwt_secret=jwt_secret, model_id=model)
 
     try:
         await client.connect()
@@ -305,7 +306,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Friendly LLM Test Client")
     parser.add_argument("--signaling", default="ws://127.0.0.1:9876/signal", help="Signaling server URL")
-    parser.add_argument("--model", default="gemma4-e2b", help="Model to use")
+    parser.add_argument("--model", default="gemm4-e2b", help="Model to use")
     parser.add_argument("--message", default="Hola, cuentame una historia corta", help="Message to send")
     parser.add_argument("--jwt-secret", default="test-secret-123", help="JWT secret")
 
