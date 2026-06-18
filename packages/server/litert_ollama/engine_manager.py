@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -161,11 +162,30 @@ class ModelRegistry:
                     except Exception:
                         pass
 
-    def _select_backend(self, model_path: str) -> litert_lm.Backend:
+    def _select_backend(self, model_path: str, model_id: str = "") -> litert_lm.Backend:
         if settings.backend == "gpu":
             return litert_lm.Backend.GPU()
         if settings.backend == "cpu":
             return litert_lm.Backend.CPU()
+
+        # Check per-model benchmark results for auto backend selection
+        if model_id:
+            bench_path = Path(settings.benchmark_results_path)
+            if bench_path.exists():
+                try:
+                    all_models = json.loads(bench_path.read_text())
+                    if model_id in all_models:
+                        best = all_models[model_id].get("best_settings", {})
+                        bench_backend = best.get("backend", "cpu")
+                        if bench_backend == "gpu":
+                            logger.info(f"Benchmark says {model_id} supports GPU → using GPU")
+                            return litert_lm.Backend.GPU()
+                        if best.get("spec_decoding"):
+                            logger.info(f"Benchmark says {model_id} works best with spec decoding")
+                        return litert_lm.Backend.CPU()
+                except Exception:
+                    pass
+
         try:
             from litert_lm_builder import litertlm_peek
             import io
@@ -252,7 +272,7 @@ class ModelRegistry:
             if not model_path:
                 raise FileNotFoundError(f"Model {model_id!r} not found")
 
-            backend = self._select_backend(model_path)
+            backend = self._select_backend(model_path, model_id)
             engine = litert_lm.Engine(
                 model_path,
                 backend=backend,

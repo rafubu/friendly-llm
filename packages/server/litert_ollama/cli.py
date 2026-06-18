@@ -84,16 +84,22 @@ def _run_serve(args):
         else:
             results_path = Path(settings.benchmark_results_path)
             for model_id, model_path in model_paths.items():
-                logger.info(f"  Benchmarking {model_id} ({model_path})")
-                results = run_model_benchmarks(model_path, results_path)
+                logger.info(f"Benchmarking {model_id} ({model_path})")
+                results = run_model_benchmarks(model_id, model_path, results_path)
 
                 best = results.get("best_settings", {})
-                if best.get("backend") == "gpu":
-                    settings.backend = "gpu"
-                    logger.info(f"  → Auto-selected GPU backend for {model_id}")
-                if best.get("spec_decoding"):
-                    settings.enable_speculative_decoding = True
-                    logger.info(f"  → Auto-enabled speculative decoding for {model_id}")
+                backend = best.get("backend", "cpu")
+                spec = best.get("spec_decoding", False)
+                tps = results.get("best_decode_tps", 0)
+
+                tags = []
+                if backend == "gpu":
+                    tags.append("GPU")
+                if spec:
+                    tags.append("SPEC")
+                tag_str = (" + ".join(tags)) if tags else "CPU"
+                logger.info(f"  → {model_id}: {tag_str} @ {tps:.1f} t/s decode")
+            logger.info(f"Results saved to {results_path}")
 
     import uvicorn
     from .app import app

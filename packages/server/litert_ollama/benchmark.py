@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 def run_model_benchmarks(
+    model_id: str,
     model_path: str,
     results_path: Path,
     prefill_tokens: int = 256,
@@ -25,9 +26,9 @@ def run_model_benchmarks(
     ]
 
     all_results = {}
-    best_name = None
+    best_name = "cpu"
     best_decode_tps = -1.0
-    best_config = {}
+    best_config = {"backend": "cpu", "spec_decoding": False}
 
     for cfg in configs:
         name = cfg["name"]
@@ -58,14 +59,17 @@ def run_model_benchmarks(
             if decode_tps > best_decode_tps:
                 best_decode_tps = decode_tps
                 best_name = name
-                best_config = {"backend": cfg["name"].split("_")[0], "spec_decoding": cfg["spec"]}
+                best_config = {
+                    "backend": name.split("_")[0],
+                    "spec_decoding": "spec" in name,
+                }
 
         except Exception as e:
             err = str(e)[:200]
             all_results[name] = {"supported": False, "error": err}
             logger.warning(f"{header}: UNSUPPORTED — {err}")
 
-    output = {
+    this_result = {
         "model_path": model_path,
         "best_config": best_name,
         "best_decode_tps": round(best_decode_tps, 1),
@@ -76,21 +80,44 @@ def run_model_benchmarks(
         "all_results": all_results,
     }
 
+    # Load existing results, update this model's entry
     results_path.parent.mkdir(parents=True, exist_ok=True)
-    results_path.write_text(json.dumps(output, indent=2))
+    all_models = {}
+    if results_path.exists():
+        try:
+            all_models = json.loads(results_path.read_text())
+        except Exception:
+            pass
+    all_models[model_id] = this_result
+    results_path.write_text(json.dumps(all_models, indent=2))
 
     best_display = (
-        f"{best_name}: {best_decode_tps:.1f} t/s decode "
+        f"  Best: {best_name} ({best_decode_tps:.1f} t/s decode)"
         if best_decode_tps > 0
-        else "(all configs failed — using CPU fallback)"
+        else "  ALL CONFIGS FAILED — using CPU fallback"
     )
-    logger.info(f"Best config: {best_display}")
-    logger.info(f"Results saved to {results_path}")
+    logger.info(best_display)
 
-    return output
+    return this_result
 
 
-def load_cached_results(results_path: Path) -> dict | None:
+def get_model_config(model_id: str, results_path: Path) -> dict | None:
+    """Get the best config for a specific model from cached results."""
+    data = load_all_results(results_path)
+    if data and model_id in data:
+        return data[model_id].get("best_settings")
+    return None
+
+
+def get_model_decode_tps(model_id: str, results_path: Path) -> float | None:
+    """Get decode tokens/second for a model from cached results."""
+    data = load_all_results(results_path)
+    if data and model_id in data:
+        return data[model_id].get("best_decode_tps")
+    return None
+
+
+def load_all_results(results_path: Path) -> dict | None:
     if results_path.exists():
         try:
             return json.loads(results_path.read_text())
