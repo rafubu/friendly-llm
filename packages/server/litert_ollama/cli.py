@@ -22,6 +22,7 @@ def main():
     serve_p.add_argument("--keep-alive", default=settings.keep_alive, help="Keep alive duration")
     serve_p.add_argument("--models-dir", default=settings.models_dir, help="Models directory")
     serve_p.add_argument("--enable-speculative-decoding", action="store_true", help="Enable spec decoding for ~2x speedup")
+    serve_p.add_argument("--benchmark-on-startup", action="store_true", help="Run benchmark on startup to find best config")
 
     pull_p = sub.add_parser("pull", help="Download a model from HuggingFace")
     pull_p.add_argument("model", help="Model ID (e.g., gemma-4-12B-it-litert-lm)")
@@ -66,6 +67,31 @@ def _run_serve(args):
     settings.keep_alive = args.keep_alive
     settings.models_dir = args.models_dir
     settings.enable_speculative_decoding = args.enable_speculative_decoding
+    settings.benchmark_on_startup = args.benchmark_on_startup
+
+    if settings.benchmark_on_startup:
+        from .benchmark import run_model_benchmarks, find_model_paths
+        from .config import settings as s
+
+        logger = __import__("logging").getLogger(__name__)
+        logger.info("Benchmark mode enabled — testing configurations...")
+
+        model_paths = find_model_paths(Path(s.models_dir))
+        if not model_paths:
+            logger.warning("No models found for benchmarking")
+        else:
+            results_path = Path(s.benchmark_results_path)
+            for model_id, model_path in model_paths.items():
+                logger.info(f"  Benchmarking {model_id} ({model_path})")
+                results = run_model_benchmarks(model_path, results_path)
+
+                best = results.get("best_settings", {})
+                if best.get("backend") == "gpu":
+                    s.backend = "gpu"
+                    logger.info(f"  → Auto-selected GPU backend for {model_id}")
+                if best.get("spec_decoding"):
+                    s.enable_speculative_decoding = True
+                    logger.info(f"  → Auto-enabled speculative decoding for {model_id}")
 
     import uvicorn
     from .app import app

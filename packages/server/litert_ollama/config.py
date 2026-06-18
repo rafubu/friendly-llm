@@ -52,6 +52,14 @@ class Settings(BaseSettings):
         default=5,
         description="Number of draft tokens per speculative decoding step"
     )
+    benchmark_on_startup: bool = Field(
+        default=False,
+        description="Run benchmark on server startup to find best config"
+    )
+    benchmark_results_path: str = Field(
+        default=str(Path.home() / ".litert-ollama" / "benchmark_results.json"),
+        description="Where to save benchmark results"
+    )
 
 
 settings = Settings()

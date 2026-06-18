@@ -219,9 +219,9 @@ async def chat_ollama(req: ChatRequest):
                     "done": True,
                     "done_reason": "stop",
                     "total_duration": end_time - start_time,
-                    "prompt_eval_count": 0,
+                    "prompt_eval_count": conv.token_count if conv else 0,
                     "prompt_eval_duration": 0,
-                    "eval_count": len(response_text.split()) or 1,
+                    "eval_count": conv.token_count if conv else 0,
                     "eval_duration": end_time - start_time,
                 }) + "\n"
 

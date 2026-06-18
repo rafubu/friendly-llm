@@ -135,7 +135,7 @@ async def generate_endpoint(req: GenerateRequest):
                     }) + "\n"
 
                 end_time = time.perf_counter_ns()
-                eval_count = len(response_text.split())
+                eval_count = conv.token_count if conv else 0
                 yield json.dumps({
                     "model": req.model,
                     "created_at": now_str,
@@ -145,7 +145,7 @@ async def generate_endpoint(req: GenerateRequest):
                     "context": [],
                     "total_duration": end_time - start_time,
                     "load_duration": 0,
-                    "prompt_eval_count": prompt_eval_count or 1,
+                    "prompt_eval_count": eval_count or 1,
                     "prompt_eval_duration": 0,
                     "eval_count": eval_count or 1,
                     "eval_duration": end_time - start_time,
