@@ -95,14 +95,20 @@ class WebRTCResponder:
         return ""
 
     async def _start_listener(self, room_id: str, channel):
+        logger.info(f"DataChannel listener started for room {room_id}")
         @channel.on("message")
         async def on_message(raw):
+            logger.info(f"DataChannel raw message received: {len(raw)} bytes")
             try:
                 msg = json.loads(raw)
             except json.JSONDecodeError:
+                logger.warning(f"Non-JSON DataChannel message: {raw[:100]}")
                 return
 
-            if msg.get("type") == "infer":
+            msg_type = msg.get("type", "")
+            logger.info(f"DataChannel message type: {msg_type} for room {room_id}")
+            if msg_type == "infer":
+                logger.info(f"Infer request: endpoint={msg.get('endpoint')}, model={msg.get('payload', {}).get('model')}")
                 asyncio.create_task(self._handle_infer(room_id, channel, msg))
 
     async def _handle_infer(self, room_id: str, channel, msg: dict):
