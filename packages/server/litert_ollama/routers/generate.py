@@ -61,7 +61,7 @@ async def generate_endpoint(req: GenerateRequest):
         entry = await registry.load_engine(
             req.model,
             vision_backend=litert_lm.Backend.CPU() if needs_vision else None,
-            enable_speculative_decoding=settings.enable_speculative_decoding or None,
+            enable_speculative_decoding=settings.enable_speculative_decoding if settings.enable_speculative_decoding else False,
         )
         engine_model_id = req.model
 
