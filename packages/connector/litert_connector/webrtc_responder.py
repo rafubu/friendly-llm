@@ -132,17 +132,32 @@ class WebRTCResponder:
         self, client: httpx.AsyncClient, channel, request_id: str, endpoint: str, payload: dict
     ):
         try:
+            logger.info(f"HTTP Request: POST {self.local_server_url}{endpoint}")
             async with client.stream(
                 "POST",
                 f"{self.local_server_url}{endpoint}",
                 json=payload,
             ) as resp:
+                logger.info(f"HTTP Response: {resp.status_code} {resp.reason_phrase}")
+                if resp.status_code >= 400:
+                    body = await resp.aread()
+                    logger.error(f"Engine error body: {body.decode('utf-8', errors='replace')[:500]}")
+                    try:
+                        channel.send(json.dumps({
+                            "type": "error",
+                            "request_id": request_id,
+                            "error": f"Engine HTTP {resp.status_code}: {body.decode('utf-8', errors='replace')[:200]}",
+                        }))
+                    except Exception:
+                        pass
+                    return
                 async for line in resp.aiter_lines():
                     if not line:
                         continue
                     try:
                         data = json.loads(line)
                     except json.JSONDecodeError:
+                        logger.warning(f"Non-JSON streaming line: {line[:100]}")
                         continue
                     if not data.get("done"):
                         try:
@@ -160,6 +175,7 @@ class WebRTCResponder:
                             "data": data,
                         }))
         except Exception as e:
+            logger.error(f"Stream error for room {id(self)}: {e}")
             try:
                 channel.send(json.dumps({
                     "type": "error",

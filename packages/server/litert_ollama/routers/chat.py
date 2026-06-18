@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import datetime
 import json
+import logging
+import traceback
 import time
 from typing import Any
 
@@ -274,6 +276,8 @@ async def chat_ollama(req: ChatRequest):
                 pass
         raise HTTPException(503, detail="Server at capacity", headers={"Retry-After": "5"})
     except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.exception(f"Unhandled error in /api/chat for model {req.model}: {e}")
         if conv:
             try:
                 conv.__exit__(None, None, None)
