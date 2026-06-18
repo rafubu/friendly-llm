@@ -9,6 +9,8 @@ from pathlib import Path
 
 from .config import settings
 
+logger = logging.getLogger(__name__)
+
 
 def main():
     # CLI entry point using argparse
