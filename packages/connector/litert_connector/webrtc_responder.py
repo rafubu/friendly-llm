@@ -95,10 +95,10 @@ class WebRTCResponder:
         return ""
 
     async def _start_listener(self, room_id: str, channel):
-        logger.info(f"DataChannel listener started for room {room_id}")
+        logger.info(f"DataChannel listener started for room {room_id}, state={channel.readyState}")
         @channel.on("message")
         async def on_message(raw):
-            logger.info(f"DataChannel raw message received: {len(raw)} bytes")
+            logger.info(f"DataChannel raw message received: {len(raw)} bytes, room={room_id}")
             try:
                 msg = json.loads(raw)
             except json.JSONDecodeError:
@@ -108,7 +108,7 @@ class WebRTCResponder:
             msg_type = msg.get("type", "")
             logger.info(f"DataChannel message type: {msg_type} for room {room_id}")
             if msg_type == "infer":
-                logger.info(f"Infer request: endpoint={msg.get('endpoint')}, model={msg.get('payload', {}).get('model')}")
+                logger.info(f"Infer DETECTADO: endpoint={msg.get('endpoint')}, model={msg.get('payload', {}).get('model')}")
                 asyncio.create_task(self._handle_infer(room_id, channel, msg))
 
     async def _handle_infer(self, room_id: str, channel, msg: dict):
@@ -160,6 +160,7 @@ class WebRTCResponder:
                 async for line in resp.aiter_lines():
                     if not line:
                         continue
+                    logger.info(f"Engine stream line ({len(line)} chars): {line[:80]}")
                     try:
                         data = json.loads(line)
                     except json.JSONDecodeError:
@@ -172,7 +173,9 @@ class WebRTCResponder:
                                 "request_id": request_id,
                                 "data": data,
                             }))
-                        except Exception:
+                            logger.info(f"Chunk sent to DataChannel")
+                        except Exception as e:
+                            logger.error(f"Failed to send chunk via DataChannel: {e}")
                             return
                     else:
                         channel.send(json.dumps({
@@ -180,6 +183,7 @@ class WebRTCResponder:
                             "request_id": request_id,
                             "data": data,
                         }))
+                        logger.info(f"Done sent to DataChannel")
         except Exception as e:
             logger.error(f"Stream error for room {id(self)}: {e}")
             try:
