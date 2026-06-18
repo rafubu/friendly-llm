@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import sys
+from pathlib import Path
 
 from .config import settings
 
@@ -71,26 +72,25 @@ def _run_serve(args):
 
     if settings.benchmark_on_startup:
         from .benchmark import run_model_benchmarks, find_model_paths
-        from .config import settings as s
 
         logger = __import__("logging").getLogger(__name__)
         logger.info("Benchmark mode enabled — testing configurations...")
 
-        model_paths = find_model_paths(Path(s.models_dir))
+        model_paths = find_model_paths(Path(settings.models_dir))
         if not model_paths:
             logger.warning("No models found for benchmarking")
         else:
-            results_path = Path(s.benchmark_results_path)
+            results_path = Path(settings.benchmark_results_path)
             for model_id, model_path in model_paths.items():
                 logger.info(f"  Benchmarking {model_id} ({model_path})")
                 results = run_model_benchmarks(model_path, results_path)
 
                 best = results.get("best_settings", {})
                 if best.get("backend") == "gpu":
-                    s.backend = "gpu"
+                    settings.backend = "gpu"
                     logger.info(f"  → Auto-selected GPU backend for {model_id}")
                 if best.get("spec_decoding"):
-                    s.enable_speculative_decoding = True
+                    settings.enable_speculative_decoding = True
                     logger.info(f"  → Auto-enabled speculative decoding for {model_id}")
 
     import uvicorn
