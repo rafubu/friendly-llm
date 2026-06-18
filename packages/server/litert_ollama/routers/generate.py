@@ -108,7 +108,7 @@ async def generate_endpoint(req: GenerateRequest):
                 has_context = False
                 response_text = ""
 
-                async for chunk in conv.send_message_async(prompt):
+                for chunk in conv.send_message_async(prompt):
                     text_out = "".join(
                         item.get("text", "")
                         for item in chunk.get("content", [])

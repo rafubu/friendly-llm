@@ -159,7 +159,7 @@ async def chat_ollama(req: ChatRequest):
                 response_text = ""
                 has_text = False
 
-                async for chunk in conv.send_message_async(last_prompt):
+                for chunk in conv.send_message_async(last_prompt):
                     text_out = "".join(
                         item.get("text", "")
                         for item in chunk.get("content", [])
