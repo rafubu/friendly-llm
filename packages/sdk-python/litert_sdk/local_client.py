@@ -71,7 +71,8 @@ class LitertLocalClient:
                         data = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    msg = data.get("message", {})
+                    if data.get("status"):
+                        continue
                     if data.get("done"):
                         yield Chunk(
                             text="",
@@ -81,7 +82,9 @@ class LitertLocalClient:
                             total_duration=data.get("total_duration"),
                         )
                         break
-                    yield Chunk(text=msg.get("content", ""), done=False)
+                    msg = data.get("message", {})
+                    if isinstance(msg, dict):
+                        yield Chunk(text=msg.get("content", ""), done=False)
         except httpx.HTTPError as e:
             raise ConnectionError(f"Request failed: {e}")
 
