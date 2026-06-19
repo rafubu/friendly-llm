@@ -5,7 +5,7 @@ from typing import Any, AsyncIterator
 
 import httpx
 
-from .errors import ConnectionError
+from .errors import ConnectionError, ContextOverflowError
 from .types import Chunk, Response, ModelInfo
 
 
@@ -35,12 +35,23 @@ class LitertLocalClient:
             resp = await self._client.post(f"{self.base_url}/api/chat", json=payload)
             resp.raise_for_status()
             data = resp.json()
+            if data.get("done_reason") == "context_overflow":
+                info = data.get("context_info", {})
+                raise ContextOverflowError(
+                    estimated_tokens=info.get("estimated_input_tokens", 0),
+                    context_limit=info.get("context_limit", 0),
+                    overflow_by=info.get("overflow_by", 0),
+                    suggestion=info.get("suggestion", ""),
+                    model=payload.get("model", ""),
+                )
             return Response(
                 text=data.get("message", {}).get("content", ""),
                 tool_calls=data.get("message", {}).get("tool_calls"),
             )
         except httpx.HTTPError as e:
             raise ConnectionError(f"Request failed: {e}")
+        except ContextOverflowError:
+            raise
 
     async def chat(
         self,
