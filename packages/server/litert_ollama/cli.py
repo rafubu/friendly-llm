@@ -47,6 +47,10 @@ def main():
     run_p.add_argument("--format", choices=["json", None], default=None, help="Response format")
     run_p.add_argument("--system", help="System prompt")
 
+    rename_p = sub.add_parser("rename", help="Rename a local model")
+    rename_p.add_argument("model", help="Current model name or ID")
+    rename_p.add_argument("new_name", help="New name for the model")
+
     args = parser.parse_args()
 
     if args.command == "serve":
@@ -61,6 +65,8 @@ def main():
         _run_delete(args)
     elif args.command == "run":
         _run_interactive(args)
+    elif args.command == "rename":
+        _run_rename(args)
     else:
         parser.print_help()
 
@@ -131,26 +137,158 @@ def _run_serve(args):
 
 
 def _run_pull(args):
-    import json
-    import requests
+    import asyncio
+    import shutil
+    import sys
+    import time
+    from pathlib import Path
 
-    url = f"http://{settings.host}:{settings.port}/api/pull"
-    payload = {"model": args.model, "model_file": ""}
-    if args.hf_token:
-        payload["huggingface_token"] = args.hf_token
+    import httpx
+    from huggingface_hub import HfApi
+    from huggingface_hub.utils import RepositoryNotFoundError
 
-    try:
-        resp = requests.post(url, json=payload, stream=True)
-        for line in resp.iter_lines():
-            if line:
-                data = json.loads(line)
-                status = data.get("status", "")
-                if status == "success":
-                    print(f"Downloaded {args.model}")
-                    return
-                print(f"  {status}")
-    except requests.exceptions.ConnectionError:
-        print(f"Error: Cannot connect to server at {url}")
+    hf_token = args.hf_token or os.getenv("HF_TOKEN")
+
+    repo_id = args.model
+    if "/" not in repo_id:
+        repo_id = f"litert-community/{repo_id}-litert-lm"
+
+    models_dir = Path(settings.models_dir)
+    models_dir.mkdir(parents=True, exist_ok=True)
+
+    termsize = shutil.get_terminal_size((80, 20))
+    max_w = termsize.columns - 1
+
+    def fmt_size(n: float) -> str:
+        for unit in ("B", "KB", "MB", "GB"):
+            if n < 1024:
+                return f"{n:.1f} {unit}"
+            n /= 1024
+        return f"{n:.1f} TB"
+
+    def write_line(line: str):
+        line = line[:max_w]
+        sys.stdout.write("\033[2K\r" + line)
+        sys.stdout.flush()
+
+    def done_line():
+        sys.stdout.write("\033[2K\r")
+        sys.stdout.flush()
+
+    def draw_progress_bar(pct, downloaded, total, speed, elapsed):
+        bar_w = 20
+        filled = int(bar_w * pct / 100) if total > 0 else 0
+        bar = "=" * filled + ">" * (1 if filled < bar_w else 0) + " " * (bar_w - filled - (1 if filled < bar_w else 0))
+        dl = fmt_size(downloaded)
+        if total > 0:
+            tl = fmt_size(total)
+            pct_str = f"{pct:5.1f}%"
+            sp = fmt_size(speed) + "/s"
+            write_line(f"  [{bar}] {pct_str}  {dl:>8}/{tl:<8}  {sp:>9}  {elapsed:4.0f}s")
+        else:
+            sp = fmt_size(speed) + "/s"
+            write_line(f"  {dl:>8}  {sp:>9}  {elapsed:4.0f}s")
+
+    async def do_pull():
+        from .model_store import ModelStore
+        store = ModelStore.get_instance()
+
+        existing = store.find_by_source(repo_id)
+        if existing:
+            done_line()
+            print(f"Model already exists as '{existing['name']}' — use 'litert-ollama rename' to change its name")
+            return
+
+        api = HfApi(token=hf_token) if hf_token else HfApi()
+
+        headers = {}
+        if hf_token:
+            headers["Authorization"] = f"Bearer {hf_token}"
+
+        write_line("  Pulling " + repo_id)
+
+        spinner_stop = False
+
+        async def spin(msg):
+            chars = "-\\|/"
+            i = 0
+            while not spinner_stop:
+                write_line(f"  {chars[i % 4]} {msg}...")
+                await asyncio.sleep(0.12)
+                i += 1
+
+        spin_task = asyncio.create_task(spin("fetching model info"))
+        try:
+            model_info = await asyncio.to_thread(api.model_info, repo_id)
+        except RepositoryNotFoundError:
+            spinner_stop = True
+            await spin_task
+            done_line()
+            print(f"Error: Model {repo_id} not found on HuggingFace")
+            return
+        finally:
+            spinner_stop = True
+            await spin_task
+
+        files = [f for f in model_info.siblings if f.rfilename.endswith(".litertlm") or f.rfilename.endswith(".bin")]
+        if not files:
+            files = model_info.siblings
+
+        model_id = args.model.replace("/", "--")
+        dest_dir = models_dir / model_id
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        total_size = sum(f.size or 0 for f in files)
+        total_done = 0
+        start_time = time.monotonic()
+
+        for file_info in files:
+            filename = file_info.rfilename
+            file_size = file_info.size or 0
+
+            if filename.endswith(".litertlm"):
+                local_path = dest_dir / "model.litertlm"
+            else:
+                local_path = dest_dir / filename
+
+            hf_url = f"https://huggingface.co/{repo_id}/resolve/main/{filename}"
+
+            downloaded = 0
+            last_report = 0
+            try:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=30.0)) as client:
+                    async with client.stream("GET", hf_url, headers=headers, follow_redirects=True) as response:
+                        response.raise_for_status()
+                        if file_size == 0:
+                            file_size = int(response.headers.get("content-length", 0))
+
+                        local_path.parent.mkdir(parents=True, exist_ok=True)
+                        with open(local_path, "wb") as f:
+                            async for chunk in response.aiter_bytes():
+                                f.write(chunk)
+                                downloaded += len(chunk)
+                                if downloaded - last_report >= 1024 * 1024 or downloaded >= file_size:
+                                    last_report = downloaded
+                                    now = time.monotonic()
+                                    done = total_done + downloaded
+                                    total_size = max(total_size, done)
+                                    pct = done / total_size * 100 if total_size > 0 else 0
+                                    speed = done / (now - start_time) if (now - start_time) > 0 else 0
+                                    draw_progress_bar(pct, done, total_size, speed, now - start_time)
+            except Exception as e:
+                done_line()
+                print(f"Error: Failed to download {filename}: {e}")
+                return
+
+            total_done += downloaded
+
+        elapsed = time.monotonic() - start_time
+        done_line()
+        print(f"Downloaded {args.model} in {elapsed:.1f}s")
+
+        store.add_model(model_id, args.model, str(dest_dir), source=repo_id)
+
+    asyncio.run(do_pull())
 
 
 def _run_list():
@@ -174,11 +312,17 @@ def _run_list():
 
 def _run_show(args):
     from .engine_manager import registry
+    from .model_store import ModelStore
     path = registry.find_model_path(args.model)
     if not path:
         print(f"Model {args.model!r} not found")
         return
+    model_id = args.model.replace("/", "--")
+    store = ModelStore.get_instance()
+    record = store.get_model(model_id)
     print(f"Model: {args.model}")
+    if record and record.get("source"):
+        print(f"Source: {record['source']}")
     print(f"Path: {path}")
     size = os.path.getsize(path)
     print(f"Size: {size / 1_000_000_000:.2f} GB")
@@ -201,6 +345,21 @@ def _run_delete(args):
         print(f"Deleted {args.model}")
     else:
         print(f"Model {args.model!r} not found")
+
+
+def _run_rename(args):
+    from .model_store import ModelStore
+    old = args.model.replace("/", "--")
+    store = ModelStore.get_instance()
+    model = store.get_model(old)
+    if not model:
+        print(f"Model '{args.model}' not found")
+        return
+    ok = store.rename_model(old, args.new_name)
+    if ok:
+        print(f"Renamed '{args.model}' to '{args.new_name}'")
+    else:
+        print(f"Failed to rename '{args.model}'")
 
 
 def _run_interactive(args):

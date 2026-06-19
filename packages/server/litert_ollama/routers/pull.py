@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
+import httpx
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -16,14 +16,10 @@ router = APIRouter()
 async def pull_model(req_body: dict):
     model_spec = req_body.get("model", "")
     stream = req_body.get("stream", True)
+    hf_token = req_body.get("huggingface_token", None)
 
     if not model_spec:
         raise HTTPException(400, "Missing model")
-
-    try:
-        from huggingface_hub import hf_hub_download, HfApi, RepositoryNotFoundError
-    except ImportError:
-        raise HTTPException(500, "huggingface-hub not installed")
 
     repo_id = model_spec
     if "/" not in repo_id:
@@ -36,7 +32,13 @@ async def pull_model(req_body: dict):
         try:
             yield json.dumps({"status": "pulling manifest"}) + "\n"
 
+            from huggingface_hub import HfApi
+            from huggingface_hub.utils import RepositoryNotFoundError
+
             api = HfApi()
+            if hf_token:
+                api.token = hf_token
+
             try:
                 model_info = api.model_info(repo_id)
             except RepositoryNotFoundError:
@@ -47,29 +49,49 @@ async def pull_model(req_body: dict):
             if not files:
                 files = model_info.siblings
 
+            model_id = model_spec.replace("/", "--")
+            dest_dir = models_dir / model_id
+            dest_dir.mkdir(parents=True, exist_ok=True)
+
+            headers = {}
+            if hf_token:
+                headers["Authorization"] = f"Bearer {hf_token}"
+
             for file_info in files:
                 filename = file_info.rfilename
-                yield json.dumps({"status": "pulling {filename}", "digest": filename, "total": 0, "completed": 0}) + "\n"
+                total_size = file_info.size or 0
 
+                yield json.dumps({"status": f"pulling {filename}", "digest": filename, "total": total_size, "completed": 0}) + "\n"
+
+                if filename.endswith(".litertlm"):
+                    local_path = dest_dir / "model.litertlm"
+                else:
+                    local_path = dest_dir / filename
+
+                hf_url = f"https://huggingface.co/{repo_id}/resolve/main/{filename}"
+
+                downloaded = 0
+                last_report = 0
                 try:
-                    local_path = hf_hub_download(
-                        repo_id=repo_id,
-                        filename=filename,
-                        cache_dir=str(models_dir),
-                        resume_download=True,
-                    )
+                    async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=30.0)) as client:
+                        async with client.stream("GET", hf_url, headers=headers, follow_redirects=True) as response:
+                            response.raise_for_status()
+                            if total_size == 0:
+                                total_size = int(response.headers.get("content-length", 0))
 
-                    model_id = model_spec.replace("/", "--")
-                    dest_dir = models_dir / model_id
-                    dest_dir.mkdir(parents=True, exist_ok=True)
-
-                    if filename.endswith(".litertlm"):
-                        import shutil
-                        dest_path = dest_dir / "model.litertlm"
-                        shutil.copy2(local_path, dest_path)
-
-                    yield json.dumps({"status": "pulling {filename}", "digest": filename, "total": 100, "completed": 100}) + "\n"
-
+                            local_path.parent.mkdir(parents=True, exist_ok=True)
+                            with open(local_path, "wb") as f:
+                                async for chunk in response.aiter_bytes():
+                                    f.write(chunk)
+                                    downloaded += len(chunk)
+                                    if downloaded - last_report >= 1024 * 1024 or downloaded >= total_size:
+                                        last_report = downloaded
+                                        yield json.dumps({
+                                            "status": f"pulling {filename}",
+                                            "digest": filename,
+                                            "total": total_size,
+                                            "completed": downloaded,
+                                        }) + "\n"
                 except Exception as e:
                     yield json.dumps({"status": "error", "error": f"Failed to download {filename}: {e}"}) + "\n"
                     return

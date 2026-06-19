@@ -46,6 +46,7 @@ class ModelStore:
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 path TEXT NOT NULL,
+                source TEXT DEFAULT '',
                 backend_constraint TEXT DEFAULT '',
                 size INTEGER DEFAULT 0,
                 digest TEXT DEFAULT '',
@@ -85,13 +86,39 @@ class ModelStore:
         conn.commit()
         conn.close()
 
-    def add_model(self, model_id: str, name: str, path: str, size: int = 0, digest: str = ""):
+    def add_model(self, model_id: str, name: str, path: str, size: int = 0, digest: str = "", source: str = ""):
         conn = self._get_conn()
+        row = conn.execute("SELECT source FROM models WHERE id = ?", (model_id,)).fetchone()
+        existing_source = row["source"] if row else ""
+        if not existing_source:
+            existing_source = source
         conn.execute(
-            "INSERT OR REPLACE INTO models (id, name, path, size, digest, modified_at) VALUES (?, ?, ?, ?, ?, datetime('now'))",
-            (model_id, name, path, size, digest),
+            "INSERT OR REPLACE INTO models (id, name, path, source, size, digest, modified_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now'))",
+            (model_id, name, path, existing_source, size, digest),
         )
         conn.commit()
+
+    def rename_model(self, old_id: str, new_name: str) -> bool:
+        conn = self._get_conn()
+        row = conn.execute("SELECT * FROM models WHERE id = ?", (old_id,)).fetchone()
+        if not row:
+            return False
+        new_id = new_name.replace("/", "--")
+        conn.execute(
+            "INSERT OR REPLACE INTO models (id, name, path, source, backend_constraint, size, digest, created_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
+            (new_id, new_name, row["path"], row["source"], row["backend_constraint"], row["size"], row["digest"], row["created_at"]),
+        )
+        conn.execute("DELETE FROM models WHERE id = ?", (old_id,))
+        conn.execute("UPDATE modelfiles SET base_model = ? WHERE base_model = ?", (new_id, old_id))
+        conn.commit()
+        return True
+
+    def find_by_source(self, source: str) -> dict[str, Any] | None:
+        conn = self._get_conn()
+        row = conn.execute("SELECT * FROM models WHERE source = ?", (source,)).fetchone()
+        if row:
+            return dict(row)
+        return None
 
     def remove_model(self, model_id: str):
         conn = self._get_conn()
