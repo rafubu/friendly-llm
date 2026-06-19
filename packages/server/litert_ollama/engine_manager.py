@@ -235,6 +235,7 @@ class ModelRegistry:
         vision_backend: litert_lm.Backend | None = None,
         audio_backend: litert_lm.Backend | None = None,
         enable_speculative_decoding: bool | None = None,
+        max_num_tokens: int | None = None,
     ) -> EngineEntry:
         async with self._global_lock:
             if model_id in self._engines:
@@ -276,7 +277,7 @@ class ModelRegistry:
             engine = litert_lm.Engine(
                 model_path,
                 backend=backend,
-                max_num_tokens=settings.context_length,
+                max_num_tokens=max_num_tokens or settings.context_length,
                 vision_backend=vision_backend,
                 audio_backend=audio_backend,
                 enable_speculative_decoding=enable_speculative_decoding,

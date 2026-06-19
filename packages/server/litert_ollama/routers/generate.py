@@ -6,7 +6,7 @@ import time
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 import litert_lm
 
 from ..engine_manager import registry, InferenceQueueFull
@@ -42,6 +42,18 @@ def _build_tools(tools: list[dict[str, Any]] | None) -> list[litert_lm.Tool] | N
     return result if result else None
 
 
+def _estimate_prompt_tokens(prompt) -> int:
+    if isinstance(prompt, str):
+        return max(len(prompt) // 4, 1)
+    if isinstance(prompt, dict):
+        content = prompt.get("content", "")
+        if isinstance(content, str):
+            return max(len(content) // 4, 1)
+        if isinstance(content, list):
+            return sum(max(len(p.get("text", "")) // 4, 1) for p in content if isinstance(p, dict))
+    return 0
+
+
 @router.post("/api/generate")
 async def generate_endpoint(req: GenerateRequest):
     if not req.model:
@@ -53,6 +65,30 @@ async def generate_endpoint(req: GenerateRequest):
     engine_model_id = req.model
     entry = None
 
+    context_limit = req.options.get("num_ctx", settings.context_length)
+    estimated_tokens = _estimate_prompt_tokens(req.prompt) + len(req.images or []) * 144
+
+    if estimated_tokens > context_limit:
+        overflow_response = {
+            "model": req.model,
+            "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "response": "",
+            "done": True,
+            "done_reason": "context_overflow",
+            "context_info": {
+                "estimated_input_tokens": estimated_tokens,
+                "context_limit": context_limit,
+                "overflow_by": estimated_tokens - context_limit,
+                "suggestion": "Reduce prompt length or set options.num_ctx higher.",
+            },
+        }
+        if req.stream:
+            return StreamingResponse(
+                iter([json.dumps(overflow_response) + "\n"]),
+                media_type="application/x-ndjson",
+            )
+        return JSONResponse(content=overflow_response)
+
     try:
         needs_vision = bool(req.images) or needs_vision_backend(
             [{"content": [{"type": "image_url"}]}] if req.images else []
@@ -62,6 +98,7 @@ async def generate_endpoint(req: GenerateRequest):
             req.model,
             vision_backend=litert_lm.Backend.CPU() if needs_vision else None,
             enable_speculative_decoding=settings.enable_speculative_decoding if settings.enable_speculative_decoding else False,
+            max_num_tokens=context_limit,
         )
         engine_model_id = req.model
 
@@ -149,6 +186,8 @@ async def generate_endpoint(req: GenerateRequest):
                     "prompt_eval_duration": 0,
                     "eval_count": eval_count or 1,
                     "eval_duration": end_time - start_time,
+                    "context_used": eval_count,
+                    "context_limit": context_limit,
                 }) + "\n"
 
             except Exception as e:

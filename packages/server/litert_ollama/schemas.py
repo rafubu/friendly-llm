@@ -77,6 +77,9 @@ class GenerateChunk(BaseModel):
     prompt_eval_duration: int | None = None
     eval_count: int | None = None
     eval_duration: int | None = None
+    context_used: int | None = None
+    context_limit: int | None = None
+    context_info: dict[str, Any] | None = None
 
 
 class ChatChunk(BaseModel):
@@ -91,6 +94,9 @@ class ChatChunk(BaseModel):
     prompt_eval_duration: int | None = None
     eval_count: int | None = None
     eval_duration: int | None = None
+    context_used: int | None = None
+    context_limit: int | None = None
+    context_info: dict[str, Any] | None = None
 
 
 class ModelTag(BaseModel):

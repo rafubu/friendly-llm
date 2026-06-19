@@ -8,7 +8,7 @@ import time
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 import litert_lm
 
 from ..engine_manager import registry, InferenceQueueFull
@@ -22,6 +22,7 @@ from ..multimodal import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _translate_messages(messages: list[dict]) -> tuple[list[dict], dict | None]:
@@ -100,6 +101,20 @@ def _build_tools(tools: list[dict[str, Any]] | None) -> list[litert_lm.Tool] | N
     return result if result else None
 
 
+def _estimate_message_tokens(messages: list[dict]) -> int:
+    total = 0
+    for m in messages:
+        content = m.get("content", "")
+        if isinstance(content, str):
+            total += max(len(content) // 4, 1)
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict):
+                    total += max(len(part.get("text", "")) // 4, 1)
+        total += 4
+    return total
+
+
 @router.post("/api/chat")
 async def chat_ollama(req: ChatRequest):
     if not req.model:
@@ -111,6 +126,32 @@ async def chat_ollama(req: ChatRequest):
     context_messages, last_prompt = _translate_messages(msg_dicts)
     if not last_prompt:
         raise HTTPException(400, "No valid messages")
+
+    context_limit = req.options.get("num_ctx", settings.context_length)
+
+    # Pre-flight: estimate tokens and check context overflow
+    estimated_tokens = _estimate_message_tokens(msg_dicts)
+    if estimated_tokens > context_limit:
+        logger.warning(f"Context overflow: estimated {estimated_tokens} > {context_limit}")
+        overflow_response = {
+            "model": req.model,
+            "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "message": None,
+            "done": True,
+            "done_reason": "context_overflow",
+            "context_info": {
+                "estimated_input_tokens": estimated_tokens,
+                "context_limit": context_limit,
+                "overflow_by": estimated_tokens - context_limit,
+                "suggestion": "Reduce message count, drop oldest messages, or set options.num_ctx higher.",
+            },
+        }
+        if req.stream:
+            return StreamingResponse(
+                iter([json.dumps(overflow_response) + "\n"]),
+                media_type="application/x-ndjson",
+            )
+        return JSONResponse(content=overflow_response)
 
     vision = any(
         needs_vision_backend([m])
@@ -129,6 +170,7 @@ async def chat_ollama(req: ChatRequest):
             vision_backend=litert_lm.Backend.CPU() if vision else None,
             audio_backend=litert_lm.Backend.CPU() if audio else None,
             enable_speculative_decoding=settings.enable_speculative_decoding if settings.enable_speculative_decoding else False,
+            max_num_tokens=context_limit,
         )
 
         sampler_config = None
@@ -212,6 +254,7 @@ async def chat_ollama(req: ChatRequest):
                     }) + "\n"
 
                 end_time = time.perf_counter_ns()
+                real_tokens = conv.token_count if conv else 0
                 yield json.dumps({
                     "model": req.model,
                     "created_at": now_str,
@@ -219,10 +262,12 @@ async def chat_ollama(req: ChatRequest):
                     "done": True,
                     "done_reason": "stop",
                     "total_duration": end_time - start_time,
-                    "prompt_eval_count": conv.token_count if conv else 0,
+                    "prompt_eval_count": real_tokens,
                     "prompt_eval_duration": 0,
-                    "eval_count": conv.token_count if conv else 0,
+                    "eval_count": real_tokens,
                     "eval_duration": end_time - start_time,
+                    "context_used": real_tokens,
+                    "context_limit": context_limit,
                 }) + "\n"
 
             except Exception as e:
@@ -278,7 +323,6 @@ async def chat_ollama(req: ChatRequest):
                 pass
         raise HTTPException(503, detail="Server at capacity", headers={"Retry-After": "5"})
     except Exception as e:
-        logger = logging.getLogger(__name__)
         logger.exception(f"Unhandled error in /api/chat for model {req.model}: {e}")
         if conv:
             try:
