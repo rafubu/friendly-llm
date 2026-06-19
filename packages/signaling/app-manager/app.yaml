@@ -54,5 +54,5 @@ ports:
   slots: 2
 
 source:
-  repo: "https://github.com/tu-usuario/litert-ollama.git"
+  repo: "https://github.com/rafubu/friendly-llm.git"
   branch: "main"
