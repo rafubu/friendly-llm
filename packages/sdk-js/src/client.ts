@@ -27,7 +27,7 @@ export class LitertClient {
   private pc: RTCPeerConnection | null = null;
   private pendingRequests: Map<string, PendingRequest> = new Map();
   private wsHandlers: Set<{ target: EventTarget; type: string; handler: EventListener }> = new Set();
-  private timeoutIds: number[] = [];
+  private timeoutIds: (number | NodeJS.Timeout)[] = [];
   private _wsOnMessage: EventListener | null = null;
 
   constructor(options: LitertClientOptions) {

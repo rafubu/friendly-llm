@@ -2,7 +2,6 @@
   "name": "litert-sdk",
   "version": "0.1.0",
   "description": "JavaScript/TypeScript SDK for LiteRT-Ollama — local HTTP + P2P WebRTC",
-  "type": "module",
   "main": "dist/litert-sdk.cjs.js",
   "module": "dist/litert-sdk.esm.js",
   "browser": "dist/litert-sdk.umd.js",
@@ -17,7 +16,14 @@
     "prepublishOnly": "npm run build",
     "test": "node --experimental-vm-modules node_modules/.bin/jest"
   },
-  "keywords": ["litert", "ollama", "llm", "webrtc", "p2p", "ai"],
+  "keywords": [
+    "litert",
+    "ollama",
+    "llm",
+    "webrtc",
+    "p2p",
+    "ai"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -30,7 +36,9 @@
     "rollup": "^4.0.0",
     "@rollup/plugin-typescript": "^11.0.0",
     "@rollup/plugin-terser": "^0.4.0",
-    "typescript": "^5.3.0"
+    "typescript": "^5.3.0",
+    "jest": "^29.0.0",
+    "@types/jest": "^29.0.0",
+    "ts-jest": "^29.0.0"
   }
-}
 }
