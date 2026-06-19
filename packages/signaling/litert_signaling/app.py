@@ -23,10 +23,147 @@ from . import config as cfg
 
 logger = logging.getLogger(__name__)
 
-JWT_SECRET = cfg.settings.jwt_secret
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_HOURS = 1
 REFRESH_EXPIRY_DAYS = 30
+
+
+def _jwt_secret() -> str:
+    return cfg.settings.jwt_secret
+
+
+class RateLimiter:
+    """Token-bucket rate limiter per connection and per IP."""
+
+    def __init__(self):
+        self._conn_msgs: dict[int, list[float]] = {}  # id(ws) -> [timestamps]
+        self._conn_ips: dict[str, list[float]] = {}   # ip -> [connection timestamps]
+
+    def check_message(self, ws: WebSocket) -> bool:
+        """Returns True if message is allowed, False if rate limited."""
+        now = time.time()
+        key = id(ws)
+        limit = cfg.settings.rate_limit_per_minute
+        window = 60.0
+
+        timestamps = self._conn_msgs.get(key, [])
+        cutoff = now - window
+        timestamps = [t for t in timestamps if t > cutoff]
+        if len(timestamps) >= limit:
+            return False
+        timestamps.append(now)
+        self._conn_msgs[key] = timestamps
+        return True
+
+    def check_connection(self, ip: str) -> bool:
+        """Returns True if connection is allowed, False if rate limited."""
+        now = time.time()
+        limit = cfg.settings.max_connections_per_ip
+        window = 1.0
+
+        timestamps = self._conn_ips.get(ip, [])
+        cutoff = now - window
+        timestamps = [t for t in timestamps if t > cutoff]
+        if len(timestamps) >= limit:
+            return False
+        timestamps.append(now)
+        self._conn_ips[ip] = timestamps
+        return True
+
+    def cleanup_connection(self, ws: WebSocket):
+        self._conn_msgs.pop(id(ws), None)
+
+
+class HeartbeatMonitor:
+    """Background task that disconnects stale WebSocket connections."""
+
+    def __init__(self):
+        self._connections: dict[int, WebSocket] = {}
+        self._last_seen: dict[int, float] = {}
+        self._task: asyncio.Task | None = None
+
+    def register(self, ws: WebSocket):
+        key = id(ws)
+        self._connections[key] = ws
+        self._last_seen[key] = time.time()
+
+    def refresh(self, ws: WebSocket):
+        self._last_seen[id(ws)] = time.time()
+
+    def unregister(self, ws: WebSocket):
+        key = id(ws)
+        self._connections.pop(key, None)
+        self._last_seen.pop(key, None)
+
+    async def start(self):
+        if self._task is None:
+            self._task = asyncio.create_task(self._loop())
+
+    async def stop(self):
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
+
+    async def _check_stale(self):
+        """Check and close stale connections once."""
+        now = time.time()
+        timeout = cfg.settings.heartbeat_timeout
+        stale = [
+            key for key, last in self._last_seen.items()
+            if now - last > timeout
+        ]
+        for key in stale:
+            ws = self._connections.get(key)
+            if ws:
+                try:
+                    await ws.close(code=1000, reason="heartbeat timeout")
+                except Exception:
+                    pass
+                self.unregister(ws)
+
+    async def _loop(self):
+        while True:
+            await asyncio.sleep(cfg.settings.heartbeat_check_interval)
+            await self._check_stale()
+
+
+rate_limiter = RateLimiter()
+heartbeat = HeartbeatMonitor()
+
+
+def _audit_log(action: str, details: str = "", ip: str = "", user_id: str = ""):
+    """Write an entry to the audit_log table."""
+    import sqlite3
+    try:
+        db_path = cfg.settings.db_path
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO audit_log (user_id, action, details, ip) VALUES (?, ?, ?, ?)",
+            (user_id, action, details, ip),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+def _check_jwt_blacklist(jti: str) -> bool:
+    """Returns True if the jti is blacklisted (revoked)."""
+    import sqlite3
+    try:
+        db_path = cfg.settings.db_path
+        conn = sqlite3.connect(db_path)
+        row = conn.execute(
+            "SELECT 1 FROM token_blacklist WHERE jti = ?", (jti,)
+        ).fetchone()
+        conn.close()
+        return row is not None
+    except Exception:
+        return False
 
 
 @dataclass
@@ -214,7 +351,10 @@ class NodeRegistry:
         if msg_type == "auth_jwt":
             token = msg.get("token", "")
             try:
-                payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+                payload = jwt.decode(token, _jwt_secret(), algorithms=[JWT_ALGORITHM])
+                jti = payload.get("jti", "")
+                if jti and _check_jwt_blacklist(jti):
+                    return None
                 return payload.get("sub", "")
             except JWTError:
                 return None
@@ -226,7 +366,9 @@ node_registry = NodeRegistry()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await heartbeat.start()
     yield
+    await heartbeat.stop()
 
 
 app = FastAPI(
@@ -261,7 +403,7 @@ class RegisterClientRequest(BaseModel):
 
 @app.post("/auth/login")
 async def login(req: LoginRequest):
-    from passlib.hash import bcrypt
+    import bcrypt as _bcrypt
     import sqlite3
 
     db_path = cfg.settings.db_path
@@ -270,7 +412,7 @@ async def login(req: LoginRequest):
     conn.close()
 
     user = None
-    if row and bcrypt.verify(req.password, row[1]):
+    if row and _bcrypt.checkpw(req.password.encode(), row[1].encode()):
         user = {"id": row[0], "role": row[2]}
 
     if not user:
@@ -284,7 +426,7 @@ async def login(req: LoginRequest):
         "exp": now + timedelta(hours=JWT_EXPIRY_HOURS),
         "jti": uuid.uuid4().hex,
     }
-    access_token = jwt.encode(access_payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    access_token = jwt.encode(access_payload, _jwt_secret(), algorithm=JWT_ALGORITHM)
     refresh_payload = {
         "sub": user["id"],
         "type": "refresh",
@@ -292,7 +434,7 @@ async def login(req: LoginRequest):
         "exp": now + timedelta(days=REFRESH_EXPIRY_DAYS),
         "jti": uuid.uuid4().hex,
     }
-    refresh_token = jwt.encode(refresh_payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    refresh_token = jwt.encode(refresh_payload, _jwt_secret(), algorithm=JWT_ALGORITHM)
 
     return {
         "access_token": access_token,
@@ -304,7 +446,7 @@ async def login(req: LoginRequest):
 
 @app.post("/auth/register")
 async def register(req: RegisterClientRequest):
-    from passlib.hash import bcrypt
+    import bcrypt as _bcrypt
     import sqlite3
 
     db_path = cfg.settings.db_path
@@ -321,7 +463,7 @@ async def register(req: RegisterClientRequest):
         conn.close()
         raise HTTPException(409, "Email already registered")
 
-    pw_hash = bcrypt.hash(req.password)
+    pw_hash = _bcrypt.hashpw(req.password.encode(), _bcrypt.gensalt()).decode()
     conn.execute(
         "INSERT INTO users (id, email, password_hash, role) VALUES (?, ?, ?, 'user')",
         (uuid.uuid4().hex, req.email, pw_hash),
@@ -386,13 +528,18 @@ def _init_db():
             created_at TEXT DEFAULT (datetime('now')),
             disabled INTEGER DEFAULT 0
         );
+        CREATE TABLE IF NOT EXISTS token_blacklist (
+            jti TEXT PRIMARY KEY,
+            revoked_by TEXT,
+            revoked_at TEXT DEFAULT (datetime('now'))
+        );
     """)
 
     admin_row = conn.execute("SELECT id FROM users WHERE email = 'admin'").fetchone()
     if not admin_row:
-        from passlib.hash import bcrypt
+        import bcrypt as _bcrypt
         admin_pw = secrets.token_hex(8)
-        admin_hash = bcrypt.hash(admin_pw)
+        admin_hash = _bcrypt.hashpw(admin_pw.encode(), _bcrypt.gensalt()).decode()
         conn.execute(
             "INSERT INTO users (id, email, password_hash, role) VALUES (?, ?, ?, 'admin')",
             (uuid.uuid4().hex, "admin", admin_hash),
@@ -427,15 +574,42 @@ async def list_nodes():
     return {"nodes": available}
 
 
+@app.get("/health")
+async def health():
+    return {
+        "status": "ok",
+        "nodes": len(node_registry._nodes),
+        "rooms": len(node_registry._rooms),
+        "uptime": 0,
+    }
+
+
 @app.websocket("/signal")
 async def signal_websocket(ws: WebSocket):
     await ws.accept()
+
+    client_ip = ws.client.host if (ws.client and hasattr(ws.client, "host")) else "127.0.0.1"
+    if not rate_limiter.check_connection(client_ip):
+        _audit_log("rate_limit_conn", f"ip={client_ip}", ip=client_ip)
+        await ws.send_json({"type": "error", "error": "Connection rate limited. Try again later."})
+        await ws.close(code=1008)
+        return
+
+    heartbeat.register(ws)
+    _audit_log("ws_connected", f"ip={client_ip}", ip=client_ip)
+
     authenticated = False
     node_id = None
     client_id = None
 
     try:
         while True:
+            if not rate_limiter.check_message(ws):
+                _audit_log("rate_limit_msg", f"node={node_id} ip={client_ip}", ip=client_ip)
+                await ws.send_json({"type": "error", "error": "Rate limited. Slow down."})
+                continue
+
+            heartbeat.refresh(ws)
             raw = await ws.receive_text()
             msg = json.loads(raw)
             msg_type = msg.get("type", "")
@@ -446,20 +620,31 @@ async def signal_websocket(ws: WebSocket):
                     if nid:
                         authenticated = True
                         node_id = nid
+                        _audit_log("auth_ok", f"node={nid}", ip=client_ip, user_id=nid)
                         await ws.send_json({"type": "auth_ok", "node_id": nid})
                         await node_registry.update_node_load(nid)
                     else:
+                        _audit_log("auth_failed", f"node_auth ip={client_ip}", ip=client_ip)
                         await ws.send_json({"type": "auth_error", "error": "Invalid credentials"})
                     continue
 
                 elif msg_type == "auth_jwt":
+                    token = msg.get("token", "")
                     nid = await node_registry.authenticate(ws, msg)
+
                     if nid:
                         authenticated = True
                         client_id = nid
+                        _audit_log("auth_ok", f"jwt_user={nid}", ip=client_ip, user_id=nid)
                         await ws.send_json({"type": "auth_ok", "user_id": nid})
                     else:
-                        await ws.send_json({"type": "auth_error", "error": "Invalid token"})
+                        try:
+                            payload = jwt.decode(token, _jwt_secret(), algorithms=[JWT_ALGORITHM])
+                            reason = "Token revoked"
+                        except Exception:
+                            reason = "Invalid token"
+                        _audit_log("auth_failed", f"jwt {reason} ip={client_ip}", ip=client_ip)
+                        await ws.send_json({"type": "auth_error", "error": reason})
                     continue
                 else:
                     await ws.send_json({"type": "error", "error": "Authenticate first"})
@@ -591,12 +776,15 @@ async def signal_websocket(ws: WebSocket):
                 await ws.send_json({"type": "pong"})
 
     except WebSocketDisconnect:
-        logger.info(f"WebSocket disconnected: node={node_id}")
+        logger.info(f"WebSocket disconnected: node={node_id} ip={client_ip}")
     except Exception as e:
         logger.exception(f"WebSocket error for node={node_id}: {e}")
     finally:
+        _audit_log("ws_disconnected", f"node={node_id} ip={client_ip}", ip=client_ip)
         if node_id:
             await node_registry.unregister_node(node_id)
         for rid, room in list(node_registry._rooms.items()):
             if room.client_ws == ws or room.node_id == node_id:
                 await node_registry.close_room(rid)
+        rate_limiter.cleanup_connection(ws)
+        heartbeat.unregister(ws)

@@ -1,0 +1,58 @@
+name: "signaling"
+display_name: "🔗 LiteRT Signaling"
+description: "WebRTC signaling server for LiteRT-Ollama P2P relay"
+icon: "🔗"
+version: "1.0"
+
+config:
+  - key: jwt_secret
+    label: "JWT Secret"
+    type: secret
+    required: true
+    help: "openssl rand -hex 32"
+
+  - key: domain
+    label: "Dominio público"
+    type: text
+    required: true
+    help: "Ej: signal.app-re.online"
+
+  - key: rate_limit
+    label: "Rate limit (msg/min)"
+    type: number
+    default: 60
+
+  - key: heartbeat_timeout
+    label: "Heartbeat timeout (s)"
+    type: number
+    default: 30
+
+  - key: turn_enabled
+    label: "TURN fallback"
+    type: boolean
+    default: true
+
+  - key: turn_user
+    label: "TURN Username"
+    type: text
+    default: "litert"
+
+  - key: turn_password
+    label: "TURN Password"
+    type: secret
+    default: ""
+
+plugins:
+  - key: turn
+    name: "🔄 TURN Server"
+    description: "Coturn relay"
+    default: true
+
+ports:
+  base: 9870
+  step: 10
+  slots: 2
+
+source:
+  repo: "https://github.com/tu-usuario/litert-ollama.git"
+  branch: "main"

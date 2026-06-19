@@ -31,8 +31,8 @@ def _translate_messages(messages: list[dict]) -> tuple[list[dict], dict | None]:
 
     name_by_tool_call_id = {}
     for m in messages:
-        if m.get("role") == "assistant" and "tool_calls" in m:
-            for tc in m.get("tool_calls", []):
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            for tc in m["tool_calls"]:
                 tc_id = tc.get("id")
                 func = tc.get("function", {})
                 if tc_id and func.get("name"):
@@ -44,7 +44,7 @@ def _translate_messages(messages: list[dict]) -> tuple[list[dict], dict | None]:
         role = m.get("role", "user")
         content = m.get("content", "")
 
-        if role == "assistant" and "tool_calls" in m:
+        if role == "assistant" and m.get("tool_calls"):
             translated_tc = [
                 {
                     "type": "function",
@@ -53,7 +53,7 @@ def _translate_messages(messages: list[dict]) -> tuple[list[dict], dict | None]:
                         "arguments": json.loads(tc.get("function", {}).get("arguments", "{}")),
                     },
                 }
-                for tc in m.get("tool_calls", [])
+                for tc in m["tool_calls"]
             ]
             result.append({"role": "assistant", "tool_calls": translated_tc, "content": content or None})
             last_msg = result[-1]
@@ -129,7 +129,6 @@ async def chat_ollama(req: ChatRequest):
 
     context_limit = req.options.get("num_ctx", settings.context_length)
 
-    # Pre-flight: estimate tokens and check context overflow
     estimated_tokens = _estimate_message_tokens(msg_dicts)
     if estimated_tokens > context_limit:
         logger.warning(f"Context overflow: estimated {estimated_tokens} > {context_limit}")
@@ -153,190 +152,171 @@ async def chat_ollama(req: ChatRequest):
             )
         return JSONResponse(content=overflow_response)
 
-    vision = any(
-        needs_vision_backend([m])
-        for m in msg_dicts
-    )
-    audio = any(
-        needs_audio_backend([m])
-        for m in msg_dicts
-    )
+    vision = any(needs_vision_backend([m]) for m in msg_dicts)
+    audio = any(needs_audio_backend([m]) for m in msg_dicts)
 
-    conv = None
-    entry = None
-    try:
-        entry = await registry.load_engine(
-            req.model,
-            vision_backend=litert_lm.Backend.CPU() if vision else None,
-            audio_backend=litert_lm.Backend.CPU() if audio else None,
-            enable_speculative_decoding=settings.enable_speculative_decoding if settings.enable_speculative_decoding else False,
-            max_num_tokens=context_limit,
-        )
+    now = datetime.datetime.now(datetime.timezone.utc)
+    now_str = now.isoformat()
 
-        sampler_config = None
-        if any(k in req.options for k in ("temperature", "top_p", "top_k", "seed")):
-            sampler_config = litert_lm.SamplerConfig(
-                temperature=req.options.get("temperature"),
-                top_p=req.options.get("top_p"),
-                top_k=req.options.get("top_k"),
-                seed=req.options.get("seed"),
-            )
+    async def stream_generator():
+        conv = None
+        entry = None
+        start_time = time.perf_counter_ns()
 
-        tool_list = _build_tools(req.tools)
+        try:
+            yield json.dumps({"status": "loading", "message": "Loading model..."}) + "\n"
 
-        conv = entry.engine.create_conversation(
-            messages=context_messages[:-1] if len(context_messages) > 1 else None,
-            tools=tool_list or None,
-            automatic_tool_calling=False,
-            sampler_config=sampler_config,
-            enable_constrained_decoding=(req.format == "json"),
-        )
-        conv.__enter__()
-
-        # Acquire queue slot (blocks if busy, raises 503 if full)
-        await entry.queue.acquire()
-
-        now = datetime.datetime.now(datetime.timezone.utc)
-        now_str = now.isoformat()
-
-        async def stream_generator():
-            start_time = time.perf_counter_ns()
             try:
-                response_text = ""
-                has_text = False
+                entry = await registry.load_engine(
+                    req.model,
+                    vision_backend=litert_lm.Backend.CPU() if vision else None,
+                    audio_backend=litert_lm.Backend.CPU() if audio else None,
+                    enable_speculative_decoding=settings.enable_speculative_decoding if settings.enable_speculative_decoding else False,
+                    max_num_tokens=context_limit,
+                )
+            except FileNotFoundError:
+                yield json.dumps({"status": "error", "error": f"Model '{req.model}' not found. Pull it with: litert-ollama pull {req.model}"}) + "\n"
+                return
+            except InferenceQueueFull:
+                yield json.dumps({"status": "error", "error": "Server is busy. Try again later."}) + "\n"
+                return
 
-                for chunk in conv.send_message_async(last_prompt):
-                    text_out = "".join(
-                        item.get("text", "")
-                        for item in chunk.get("content", [])
-                        if item.get("type") == "text"
-                    )
-                    tool_calls = chunk.get("tool_calls", [])
+            yield json.dumps({"status": "loaded"}) + "\n"
 
-                    if text_out:
-                        response_text += text_out
+            sampler_config = None
+            if any(k in req.options for k in ("temperature", "top_p", "top_k", "seed")):
+                sampler_config = litert_lm.SamplerConfig(
+                    temperature=req.options.get("temperature"),
+                    top_p=req.options.get("top_p"),
+                    top_k=req.options.get("top_k"),
+                    seed=req.options.get("seed"),
+                )
 
-                    openai_tc = None
-                    if tool_calls:
-                        openai_tc = [
-                            {
-                                "function": {
-                                    "name": tc.get("function", {}).get("name"),
-                                    "arguments": json.dumps(tc.get("function", {}).get("arguments", {})),
-                                },
-                            }
-                            for tc in tool_calls
-                        ]
+            tool_list = _build_tools(req.tools)
 
-                    chunk_data = {
-                        "model": req.model,
-                        "created_at": now_str,
-                        "message": {
-                            "role": "assistant",
-                            "content": text_out,
-                        },
-                        "done": False,
-                    }
-                    if openai_tc:
-                        chunk_data["message"]["tool_calls"] = openai_tc
-                        has_text = True
+            conv = entry.engine.create_conversation(
+                messages=context_messages[:-1] if len(context_messages) > 1 else None,
+                tools=tool_list or None,
+                automatic_tool_calling=False,
+                sampler_config=sampler_config,
+                enable_constrained_decoding=(req.format == "json"),
+            )
+            conv.__enter__()
 
-                    if text_out or openai_tc:
-                        yield json.dumps(chunk_data) + "\n"
-                        has_text = True
+            await entry.queue.acquire()
 
-                if not has_text:
-                    yield json.dumps({
-                        "model": req.model,
-                        "created_at": now_str,
-                        "message": {"role": "assistant", "content": ""},
-                        "done": False,
-                    }) + "\n"
+            response_text = ""
+            has_text = False
 
-                end_time = time.perf_counter_ns()
-                real_tokens = conv.token_count if conv else 0
+            for chunk in conv.send_message_async(last_prompt):
+                text_out = "".join(
+                    item.get("text", "")
+                    for item in chunk.get("content", [])
+                    if item.get("type") == "text"
+                )
+                tool_calls = chunk.get("tool_calls", [])
+
+                if text_out:
+                    response_text += text_out
+
+                openai_tc = None
+                if tool_calls:
+                    openai_tc = [
+                        {
+                            "function": {
+                                "name": tc.get("function", {}).get("name"),
+                                "arguments": json.dumps(tc.get("function", {}).get("arguments", {})),
+                            },
+                        }
+                        for tc in tool_calls
+                    ]
+
+                chunk_data = {
+                    "model": req.model,
+                    "created_at": now_str,
+                    "message": {
+                        "role": "assistant",
+                        "content": text_out,
+                    },
+                    "done": False,
+                }
+                if openai_tc:
+                    chunk_data["message"]["tool_calls"] = openai_tc
+                    has_text = True
+
+                if text_out or openai_tc:
+                    yield json.dumps(chunk_data) + "\n"
+                    has_text = True
+
+            if not has_text:
                 yield json.dumps({
                     "model": req.model,
                     "created_at": now_str,
                     "message": {"role": "assistant", "content": ""},
-                    "done": True,
-                    "done_reason": "stop",
-                    "total_duration": end_time - start_time,
-                    "prompt_eval_count": real_tokens,
-                    "prompt_eval_duration": 0,
-                    "eval_count": real_tokens,
-                    "eval_duration": end_time - start_time,
-                    "context_used": real_tokens,
-                    "context_limit": context_limit,
+                    "done": False,
                 }) + "\n"
 
-            except Exception as e:
-                yield json.dumps({
-                    "model": req.model,
-                    "created_at": now_str,
-                    "message": {"role": "assistant", "content": ""},
-                    "done": True,
-                    "done_reason": "error",
-                    "error": str(e),
-                }) + "\n"
-            finally:
+            end_time = time.perf_counter_ns()
+            real_tokens = conv.token_count if conv else 0
+            yield json.dumps({
+                "model": req.model,
+                "created_at": now_str,
+                "message": {"role": "assistant", "content": ""},
+                "done": True,
+                "done_reason": "stop",
+                "total_duration": end_time - start_time,
+                "prompt_eval_count": real_tokens,
+                "prompt_eval_duration": 0,
+                "eval_count": real_tokens,
+                "eval_duration": end_time - start_time,
+                "context_used": real_tokens,
+                "context_limit": context_limit,
+            }) + "\n"
+
+        except Exception as e:
+            logger.exception(f"Error in /api/chat for model {req.model}: {e}")
+            yield json.dumps({
+                "status": "error",
+                "error": str(e),
+            }) + "\n"
+        finally:
+            if conv:
                 try:
                     conv.__exit__(None, None, None)
+                except Exception:
+                    pass
+            if entry:
+                try:
+                    entry.queue.release()
                 except Exception:
                     pass
                 try:
                     await registry.release_engine(req.model)
                 except Exception:
                     pass
-                entry.queue.release()
 
-        if not req.stream:
-            full_text = ""
-            async for chunk in stream_generator():
+    if not req.stream:
+        full_text = ""
+        async for chunk in stream_generator():
+            try:
                 data = json.loads(chunk)
                 if not data.get("done"):
                     full_text += data.get("message", {}).get("content", "")
-            return {
-                "model": req.model,
-                "created_at": now_str,
-                "message": {"role": "assistant", "content": full_text},
-                "done": True,
-                "done_reason": "stop",
-            }
+            except json.JSONDecodeError:
+                pass
+        return {
+            "model": req.model,
+            "created_at": now_str,
+            "message": {"role": "assistant", "content": full_text},
+            "done": True,
+            "done_reason": "stop",
+        }
 
-        return StreamingResponse(
-            stream_generator(),
-            media_type="application/x-ndjson",
-            headers={"Cache-Control": "no-cache"},
-        )
-
-    except InferenceQueueFull:
-        if conv:
-            try:
-                conv.__exit__(None, None, None)
-            except Exception:
-                pass
-        if entry:
-            try:
-                await registry.release_engine(req.model)
-            except Exception:
-                pass
-        raise HTTPException(503, detail="Server at capacity", headers={"Retry-After": "5"})
-    except Exception as e:
-        logger.exception(f"Unhandled error in /api/chat for model {req.model}: {e}")
-        if conv:
-            try:
-                conv.__exit__(None, None, None)
-            except Exception:
-                pass
-        if entry:
-            if entry.queue.active > 0:
-                entry.queue.release()
-            try:
-                await registry.release_engine(req.model)
-            except Exception:
-                pass
-        raise HTTPException(500, str(e))
+    return StreamingResponse(
+        stream_generator(),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 @router.post("/v1/chat/completions")

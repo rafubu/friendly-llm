@@ -1,0 +1,39 @@
+version: "3.9"
+
+services:
+  signaling:
+    build:
+      context: ./packages/signaling/
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:{{ port_base }}:9876"
+    environment:
+      - LITERT_SIGNALING_JWT_SECRET={{ config.jwt_secret }}
+      - LITERT_SIGNALING_DB_PATH=/data/signaling.db
+      - LITERT_SIGNALING_HOST=0.0.0.0
+      - LITERT_SIGNALING_PORT=9876
+      - LITERT_SIGNALING_RATE_LIMIT_PER_MINUTE={{ config.rate_limit }}
+      - LITERT_SIGNALING_HEARTBEAT_TIMEOUT={{ config.heartbeat_timeout }}
+      - LITERT_SIGNALING_MAX_CONNECTIONS_PER_IP=5
+      - INSTANCE_SLUG={{ instance.slug }}
+    volumes:
+      - ./data/signaling:/data
+    restart: unless-stopped
+
+  {% if plugins.turn and config.turn_enabled %}
+  turn:
+    image: coturn/coturn:latest
+    network_mode: host
+    environment:
+      - TURN_USER={{ config.turn_user }}
+      - TURN_PASSWORD={{ config.turn_password if config.turn_password else (instance.slug + '-turn-secret') }}
+    command: >
+      -n --realm={{ config.domain }}
+      --listening-port={{ port_base + 1 }}
+      --min-port=49152 --max-port=65535
+      --fingerprint
+      --lt-cred-mech
+      --user={{ config.turn_user }}:{{ config.turn_password if config.turn_password else (instance.slug + '-turn-secret') }}
+      --no-stdout-log
+    restart: unless-stopped
+  {% endif %}

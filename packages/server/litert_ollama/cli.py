@@ -293,13 +293,18 @@ def _run_pull(args):
 
 def _run_list():
     from .engine_manager import registry
-    models = registry.discover_models()
-    if not models:
+    from .model_store import ModelStore
+    store = ModelStore.get_instance()
+    fs_models = registry.discover_models()
+    if not fs_models:
         print("No models found")
         return
-    print(f"{'ID':<30} {'SIZE':<12} {'MODIFIED'}")
-    print("-" * 60)
-    for m in sorted(models, key=lambda x: x.get("modified", 0), reverse=True):
+
+    store_models = {m["id"]: m for m in store.list_models()}
+
+    print(f"{'NAME':<35} {'SIZE':<12} {'SOURCE'}")
+    print("-" * 80)
+    for m in sorted(fs_models, key=lambda x: x.get("modified", 0), reverse=True):
         size = m.get("size", 0)
         if size > 1_000_000_000:
             size_str = f"{size / 1_000_000_000:.1f} GB"
@@ -307,7 +312,13 @@ def _run_list():
             size_str = f"{size / 1_000_000:.1f} MB"
         else:
             size_str = f"{size / 1_000:.0f} KB"
-        print(f"{m['id']:<30} {size_str:<12}")
+
+        fs_id = m["id"]
+        store_id = fs_id.replace("/", "--")
+        record = store_models.get(store_id)
+        name = record["name"] if record else fs_id
+        source = record.get("source", "") if record else ""
+        print(f"{name:<35} {size_str:<12} {source}")
 
 
 def _run_show(args):
@@ -348,45 +359,223 @@ def _run_delete(args):
 
 
 def _run_rename(args):
+    import re
+    from pathlib import Path
     from .model_store import ModelStore
-    old = args.model.replace("/", "--")
+    from .config import settings
     store = ModelStore.get_instance()
-    model = store.get_model(old)
+    old_db_id = args.model.replace("/", "--")
+    new_id = re.sub(r'[<>:"/\\|?*]', '-', args.new_name.replace("/", "--"))
+
+    model = store.get_model(old_db_id)
     if not model:
+        model = store.find_by_name(args.model)
+
+    old_dir = None
+    models_dir = Path(settings.models_dir)
+    for d in models_dir.iterdir():
+        if d.is_dir() and (d / "model.litertlm").exists():
+            if d.name == old_db_id or d.name == args.model:
+                old_dir = d
+                break
+
+    if not model and not old_dir:
         print(f"Model '{args.model}' not found")
         return
-    ok = store.rename_model(old, args.new_name)
-    if ok:
-        print(f"Renamed '{args.model}' to '{args.new_name}'")
+
+    if old_dir:
+        new_dir = old_dir.parent / new_id
+        if old_dir != new_dir:
+            old_dir.rename(new_dir)
+    elif model:
+        old_path = Path(model["path"])
+        new_path = old_path.parent / new_id
+        if old_path.exists():
+            old_path.rename(new_path)
+        elif not new_path.exists():
+            new_path.mkdir(parents=True, exist_ok=True)
+        new_dir = new_path
     else:
-        print(f"Failed to rename '{args.model}'")
+        new_dir = old_dir.parent / new_id
+
+    source = model.get("source", "") if model else ""
+    store.add_model(new_id, args.new_name, str(new_dir), source=source)
+    if model and model["id"] != new_id:
+        if store.get_model(model["id"]):
+            store.remove_model(model["id"])
+
+    print(f"Renamed to '{args.new_name}'")
+    if new_id != args.new_name.replace("/", "--"):
+        print(f"  (stored as '{new_id}' — char(s) like ':' not allowed in filenames)")
 
 
 def _run_interactive(args):
+    import json as _json
+    import shutil
+    import sys
+    import threading
+    import time
+
     import requests
 
     url = f"http://{settings.host}:{settings.port}/api/chat"
-
     system_prompt = args.system
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
 
-    print(f"Chatting with {args.model}. Ctrl+C to exit.\n")
+    termsize = shutil.get_terminal_size((80, 20))
+    max_w = termsize.columns - 1
+
+    def write_line(line: str):
+        sys.stdout.write("\033[2K\r" + line[:max_w])
+        sys.stdout.flush()
+
+    def done_line():
+        sys.stdout.write("\033[2K\r")
+        sys.stdout.flush()
+
+    def fmt_size(n: float) -> str:
+        for unit in ("B", "KB", "MB", "GB"):
+            if n < 1024:
+                return f"{n:.1f} {unit}"
+            n /= 1024
+        return f"{n:.1f} TB"
+
+    spinner_running = False
+    spinner_msg = ""
+
+    def start_spinner(msg: str):
+        nonlocal spinner_running, spinner_msg
+        spinner_running = True
+        spinner_msg = msg
+
+        def _spin():
+            chars = "-\\|/"
+            i = 0
+            while spinner_running:
+                write_line(f"  {chars[i % 4]} {spinner_msg}")
+                time.sleep(0.12)
+                i += 1
+            done_line()
+
+        t = threading.Thread(target=_spin, daemon=True)
+        t.start()
+        return t
+
+    def stop_spinner(t: threading.Thread | None):
+        nonlocal spinner_running
+        spinner_running = False
+        if t:
+            t.join(0.5)
+        done_line()
+
+    def send_and_stream(payload: dict) -> str | None:
+        spin_thread = None
+        try:
+            resp = requests.post(url, json=payload, stream=True, timeout=(5, 300))
+
+            if resp.status_code != 200:
+                done_line()
+                try:
+                    err_data = resp.json()
+                    err_msg = err_data.get("detail", err_data.get("error", str(resp.status_code)))
+                except Exception:
+                    err_msg = resp.reason or str(resp.status_code)
+                if resp.status_code == 404:
+                    print(f"\nError: Model '{args.model}' not found on server")
+                    print(f"  Pull it: litert-ollama pull {args.model}")
+                elif resp.status_code == 503:
+                    print(f"\nError: Server is busy. Try again later.")
+                else:
+                    print(f"\nError: Server returned HTTP {resp.status_code} ({err_msg})")
+                return None
+
+            spin_thread = start_spinner("waiting for response")
+
+            full_response = ""
+            first_token = True
+            got_any_data = False
+            for line in resp.iter_lines():
+                if not line:
+                    continue
+                try:
+                    data = _json.loads(line)
+                except _json.JSONDecodeError:
+                    continue
+
+                got_any_data = True
+
+                status = data.get("status")
+                if status == "loading":
+                    spinner_msg = data.get("message", "Loading model...")
+                    continue
+                if status == "loaded":
+                    if spin_thread:
+                        stop_spinner(spin_thread)
+                        spin_thread = None
+                    continue
+                if status == "error":
+                    stop_spinner(spin_thread)
+                    spin_thread = None
+                    print(f"\nError: {data.get('error', 'Unknown error')}")
+                    return None
+
+                if data.get("done"):
+                    continue
+
+                content = data.get("message", {}).get("content", "")
+                if not content:
+                    continue
+
+                if first_token:
+                    stop_spinner(spin_thread)
+                    spin_thread = None
+                    first_token = False
+
+                print(content, end="", flush=True)
+                full_response += content
+
+            if first_token:
+                stop_spinner(spin_thread)
+                spin_thread = None
+
+            if not got_any_data:
+                print("\n  (no response from server)")
+            else:
+                print()
+            return full_response
+
+        except requests.exceptions.ConnectionError:
+            stop_spinner(spin_thread)
+            spin_thread = None
+            done_line()
+            print(f"Error: Cannot connect to server at {url}")
+            print(f"  Start the server: litert-ollama serve")
+            return None
+        except requests.exceptions.Timeout:
+            stop_spinner(spin_thread)
+            spin_thread = None
+            done_line()
+            print(f"\nError: Request timed out")
+            return None
+        except Exception as e:
+            stop_spinner(spin_thread)
+            spin_thread = None
+            done_line()
+            print(f"\nError: {e}")
+            return None
+        finally:
+            if spin_thread:
+                spinner_running = False
+                spin_thread.join(0.5)
+
+    print(f"  Chatting with {args.model}. Ctrl+C to exit.\n")
 
     if args.prompt:
         messages.append({"role": "user", "content": args.prompt})
         payload = {"model": args.model, "messages": messages, "stream": True}
-        try:
-            resp = requests.post(url, json=payload, stream=True)
-            for line in resp.iter_lines():
-                if line:
-                    data = json.loads(line)
-                    if not data.get("done"):
-                        print(data.get("message", {}).get("content", ""), end="", flush=True)
-            print()
-        except requests.exceptions.ConnectionError:
-            print(f"Error: Cannot connect to server at {url}")
+        send_and_stream(payload)
         return
 
     while True:
@@ -400,25 +589,10 @@ def _run_interactive(args):
 
         messages.append({"role": "user", "content": user_input})
         payload = {"model": args.model, "messages": messages[-10:], "stream": True}
-
-        try:
-            resp = requests.post(url, json=payload, stream=True)
-            full_response = ""
-            for line in resp.iter_lines():
-                if line:
-                    data = json.loads(line)
-                    content = data.get("message", {}).get("content", "")
-                    if not data.get("done") and content:
-                        print(content, end="", flush=True)
-                        full_response += content
-            print()
-            messages.append({"role": "assistant", "content": full_response})
-        except requests.exceptions.ConnectionError:
-            print(f"\nError: Cannot connect to server at {url}")
+        response = send_and_stream(payload)
+        if response is None:
             break
-        except KeyboardInterrupt:
-            print("\n[Interrupted]")
-            break
+        messages.append({"role": "assistant", "content": response})
 
 
 if __name__ == "__main__":

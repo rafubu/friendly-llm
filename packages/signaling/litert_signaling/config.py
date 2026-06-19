@@ -20,7 +20,10 @@ class Settings(BaseSettings):
         default="dev-secret-change-in-production",
         description="JWT signing secret. Must match Web UI's JWT_SECRET.",
     )
-    rate_limit_per_minute: int = Field(default=60, description="Max WebSocket messages per minute")
+    rate_limit_per_minute: int = Field(default=60, description="Max WebSocket messages per minute per connection")
+    max_connections_per_ip: int = Field(default=5, description="Max WebSocket connections per second per IP")
+    heartbeat_timeout: float = Field(default=30.0, description="Seconds without messages before disconnect")
+    heartbeat_check_interval: float = Field(default=5.0, description="Seconds between heartbeat checks")
 
     @field_validator("jwt_secret", mode="before")
     @classmethod
