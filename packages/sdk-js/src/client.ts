@@ -168,6 +168,7 @@ export class LitertClient {
 
     return iterator;
 
+    const self = this;
     function resolveNext(result: Chunk | IteratorResult<Chunk>): void {
       if (request.chunks.length > 0) {
         const { resolve } = request.chunks.shift()!;
@@ -192,7 +193,7 @@ export class LitertClient {
           totalDuration: data.data?.total_duration,
         };
         resolveNext({ value: chunk, done: true });
-        this.pendingRequests.delete(requestId);
+        self.pendingRequests.delete(requestId);
       } else if (data.type === 'chunk') {
         const chunkData = data.data?.message || {};
         const chunk: Chunk = { text: chunkData.content || '', done: false };
@@ -204,7 +205,7 @@ export class LitertClient {
           const { reject } = request.chunks.shift()!;
           reject(new Error(data.error));
         }
-        this.pendingRequests.delete(requestId);
+        self.pendingRequests.delete(requestId);
       }
     }
   }
@@ -318,6 +319,10 @@ export class LitertClient {
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
 
+          if (!pc.localDescription) {
+            reject(new Error('Failed to create local description'));
+            return;
+          }
           self.ws?.send(JSON.stringify({
             type: 'sdp_answer',
             room_id: self.roomId,
