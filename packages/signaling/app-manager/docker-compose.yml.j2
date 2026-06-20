@@ -3,7 +3,7 @@ version: "3.9"
 services:
   signaling:
     build:
-      context: ./packages/signaling/
+      context: ./src/packages/signaling/
       dockerfile: Dockerfile
     ports:
       - "127.0.0.1:{{ port_base }}:9876"
