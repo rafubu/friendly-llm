@@ -51,6 +51,15 @@ def main():
     rename_p.add_argument("model", help="Current model name or ID")
     rename_p.add_argument("new_name", help="New name for the model")
 
+    launch_p = sub.add_parser("launch", help="Launch a third-party tool using litert-ollama as backend")
+    launch_sub = launch_p.add_subparsers(dest="launch_command")
+    opencode_p = launch_sub.add_parser("opencode", help="Configure and launch OpenCode with litert-ollama")
+    opencode_p.add_argument("--host", default=settings.host, help="Litert-Ollama server host")
+    opencode_p.add_argument("--port", type=int, default=settings.port, help="Litert-Ollama server port")
+    opencode_p.add_argument("--config-dir", help="OpenCode config directory (default: ~/.config/opencode)")
+    opencode_p.add_argument("--start-server", action="store_true", help="Start server if not running")
+    opencode_p.add_argument("--no-open", action="store_true", help="Don't launch OpenCode, just write config")
+
     args = parser.parse_args()
 
     if args.command == "serve":
@@ -67,6 +76,11 @@ def main():
         _run_interactive(args)
     elif args.command == "rename":
         _run_rename(args)
+    elif args.command == "launch":
+        if args.launch_command == "opencode":
+            _run_launch_opencode(args)
+        else:
+            print("Usage: litert-ollama launch opencode [options]")
     else:
         parser.print_help()
 
@@ -593,6 +607,183 @@ def _run_interactive(args):
         if response is None:
             break
         messages.append({"role": "assistant", "content": response})
+
+
+def _run_launch_opencode(args):
+    import json as _json
+    import shutil
+    import subprocess
+    import textwrap
+    import time
+
+    host = args.host
+    port = args.port
+    base_url = f"http://{host}:{port}"
+
+    config_dir = args.config_dir or Path.home() / ".config" / "opencode"
+    config_path = Path(config_dir) / "opencode.jsonc"
+
+    def server_running() -> bool:
+        try:
+            import urllib.request
+            req = urllib.request.Request(f"{base_url}/v1/models")
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                return resp.status == 200
+        except Exception:
+            return False
+
+    def start_server() -> bool:
+        if not sys.stdin.isatty():
+            print("Cannot prompt in non-interactive mode. Start server manually:")
+            print(f"  litert-ollama serve --host {host} --port {port}")
+            return False
+
+        try:
+            answer = input(f"Server not running at {base_url}/v1/models. Start it? [Y/n] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return False
+        if answer in ("", "y", "yes"):
+            subprocess.Popen(
+                [sys.executable, "-m", "litert_ollama.cli", "serve",
+                 "--host", host, "--port", str(port)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0,
+            )
+            print("Server starting in background...")
+            for _ in range(15):
+                time.sleep(1)
+                if server_running():
+                    print("Server is ready!")
+                    return True
+            print("Server not responding yet. Continue anyway?")
+            return True
+        return False
+
+    def fetch_models() -> list[dict]:
+        try:
+            import urllib.request
+            req = urllib.request.Request(f"{base_url}/v1/models")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = _json.loads(resp.read().decode())
+            return data.get("data", [])
+        except Exception as e:
+            print(f"Warning: Could not fetch models: {e}")
+            return []
+
+    # 1. Check if server is running
+    print(f"  Checking server at {base_url}/v1/models...")
+    if not server_running():
+        if args.start_server or (args.start_server is False and sys.stdin.isatty()):
+            if not start_server():
+                print("Aborted.")
+                return
+        else:
+            print(f"Server not running. Start it with: litert-ollama serve --host {host} --port {port}")
+            return
+    else:
+        print("  Server is running!")
+
+    # 2. Fetch models
+    models = fetch_models()
+    if not models:
+        print("Warning: No models found on server (or couldn't reach it)")
+    else:
+        print(f"  Found {len(models)} model(s):")
+        for m in models:
+            mid = m.get("id", "?")
+            print(f"    - {mid}")
+
+    # Deduplicate (v1/models lists with and without ",gpu" suffix)
+    seen = set()
+    unique_models = []
+    for m in models:
+        mid = m.get("id", "")
+        base = mid.split(",")[0] if "," in mid else mid
+        if base not in seen:
+            seen.add(base)
+            unique_models.append(base)
+
+    # 3. Build config
+    model_configs = {}
+    for mid in unique_models:
+        name = mid.replace("--", "/")
+        model_configs[mid] = {
+            "name": name,
+            "limit": {
+                "context": 32768,
+                "output": 16384,
+            },
+        }
+
+    provider_config = {
+        "$schema": "https://opencode.ai/config.json",
+        "model": f"litert/{unique_models[0]}" if unique_models else "litert/gemma-4-E4B-it",
+        "provider": {
+            "litert": {
+                "npm": "@ai-sdk/openai-compatible",
+                "name": "LiteRT-LM (local)",
+                "options": {
+                    "baseURL": f"{base_url}/v1",
+                },
+                "models": model_configs if model_configs else {
+                    "gemma-4-E4B-it": {
+                        "name": "Gemma 4 E4B (local GPU)",
+                        "limit": {"context": 32768, "output": 16384},
+                    },
+                },
+            },
+        },
+    }
+
+    # 4. Write config
+    config_dir = Path(config_dir)
+    config_dir.mkdir(parents=True, exist_ok=True)
+    if config_path.exists():
+        try:
+            answer = input(f"  Overwrite {config_path}? [y/N] ").strip().lower()
+            if answer not in ("y", "yes"):
+                # Write to a backup instead
+                config_path = config_dir / "opencode-litert.jsonc"
+                print(f"  Writing to {config_path} instead")
+                backup = True
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+    else:
+        print(f"  Creating {config_path}")
+
+    config_path.write_text(_json.dumps(provider_config, indent=2), encoding="utf-8")
+    print(f"  Config written: {config_path}")
+
+    # 5. Print instructions
+    if unique_models:
+        default_model = f"litert/{unique_models[0]}"
+    else:
+        default_model = "litert/gemma-4-E4B-it"
+
+    sep = "-" * 50
+    print()
+    print(f"  {sep}")
+    print("  OpenCode is ready to use with litert-ollama!")
+    print()
+    print(f"    opencode --model {default_model}")
+    print()
+    print("  Select your model in the TUI with: /models")
+    print(f"  {sep}")
+    print()
+
+    # 6. Optionally launch OpenCode
+    if not args.no_open:
+        import shutil
+        opencode_path = shutil.which("opencode")
+        if opencode_path:
+            print("  Launching OpenCode...")
+            os.execvp(opencode_path, [opencode_path, "--model", default_model])
+        else:
+            print("  OpenCode not found in PATH. Install it:")
+            print("    curl -fsSL https://opencode.ai/install | bash")
+            print("  Then run: opencode --model", default_model)
 
 
 if __name__ == "__main__":
