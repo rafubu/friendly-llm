@@ -623,6 +623,8 @@ def _run_launch_opencode(args):
     config_dir = args.config_dir or Path.home() / ".config" / "opencode"
     config_path = Path(config_dir) / "opencode.jsonc"
 
+    # ── helpers ─────────────────────────────────────────
+
     def server_running() -> bool:
         try:
             import urllib.request
@@ -644,11 +646,14 @@ def _run_launch_opencode(args):
             print()
             return False
         if answer in ("", "y", "yes"):
+            flags = {}
+            if sys.platform == "win32":
+                flags["creationflags"] = subprocess.CREATE_NEW_CONSOLE
             subprocess.Popen(
                 [sys.executable, "-m", "litert_ollama.cli", "serve",
                  "--host", host, "--port", str(port)],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                creationflags=subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0,
+                **flags,
             )
             print("Server starting in background...")
             for _ in range(15):
@@ -671,7 +676,154 @@ def _run_launch_opencode(args):
             print(f"Warning: Could not fetch models: {e}")
             return []
 
-    # 1. Check if server is running
+    def detect_opencode() -> str | None:
+        candidates = []
+
+        # 1) Check PATH
+        which = shutil.which("opencode")
+        if which:
+            candidates.append(("PATH", which))
+
+        # 2) Check common install locations per platform
+        home = Path.home()
+        common_paths = []
+
+        if sys.platform == "win32":
+            common_paths.extend([
+                home / "AppData" / "Roaming" / "npm" / "opencode.cmd",
+                home / "AppData" / "Local" / "opencode" / "opencode.exe",
+                Path(os.environ.get("ProgramFiles", "C:\\Program Files")) / "opencode" / "bin" / "opencode.exe",
+            ])
+        elif sys.platform == "darwin":
+            common_paths.extend([
+                Path("/opt/homebrew/bin/opencode"),
+                Path("/usr/local/bin/opencode"),
+            ])
+        else:
+            common_paths.extend([
+                home / ".local" / "bin" / "opencode",
+                Path("/usr/local/bin/opencode"),
+            ])
+
+        for p in common_paths:
+            if p.exists() and os.access(p, os.X_OK):
+                candidates.append((str(p.parent), str(p)))
+
+        if candidates:
+            # Return the first found
+            return candidates[0][1]
+
+        # 3) Check via package-manager modules
+        try:
+            import importlib.metadata
+            importlib.metadata.distribution("opencode-ai")
+            # Installed via pip — find the entry point
+            ep = importlib.metadata.entry_points(group="console_scripts", name="opencode")
+            for e in ep:
+                return e.value  # not directly useful
+        except Exception:
+            pass
+
+        return None
+
+    def suggest_install_cmd() -> str:
+        """Return a one-liner install command for the detected platform."""
+        if sys.platform == "win32":
+            if shutil.which("scoop"):
+                return "scoop install opencode"
+            if shutil.which("choco"):
+                return "choco install opencode"
+            # npm is most reliable on windows
+            return "npm install -g opencode-ai"
+        elif sys.platform == "darwin":
+            if shutil.which("brew"):
+                return "brew install anomalyco/tap/opencode"
+            return "curl -fsSL https://opencode.ai/install | bash"
+        else:
+            # Linux
+            return "curl -fsSL https://opencode.ai/install | bash"
+
+    def install_opencode() -> bool:
+        if not sys.stdin.isatty():
+            return False
+
+        print()
+        print("  OpenCode is not installed.")
+        print()
+
+        # Detect which package managers are available
+        methods = []
+
+        methods.append(("npm (recommended)", "npm install -g opencode-ai", bool(shutil.which("npm"))))
+        if sys.platform == "win32":
+            methods.append(("scoop", "scoop install opencode", bool(shutil.which("scoop"))))
+            methods.append(("choco", "choco install opencode", bool(shutil.which("choco"))))
+        elif sys.platform == "darwin":
+            methods.append(("brew", "brew install anomalyco/tap/opencode", bool(shutil.which("brew"))))
+        elif sys.platform == "linux":
+            methods.append(("curl|bash (universal)", "curl -fsSL https://opencode.ai/install | bash", bool(shutil.which("curl"))))
+            methods.append(("pipx", "pipx install opencode-ai", bool(shutil.which("pipx"))))
+            methods.append(("npm", "npm install -g opencode-ai", bool(shutil.which("npm"))))
+        else:
+            methods.append(("npm", "npm install -g opencode-ai", bool(shutil.which("npm"))))
+
+        print("  Available install methods:")
+        print()
+        for i, (label, cmd, available) in enumerate(methods, 1):
+            status = "✅" if available else "⚠️  (tool not found)"
+            print(f"    [{i}] {label:<28} {status}")
+            print(f"        {cmd}")
+        print()
+
+        try:
+            choice = input(f"  Select method [1-{len(methods)}] or press Enter to skip: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return False
+
+        if not choice:
+            return False
+
+        try:
+            idx = int(choice) - 1
+            if idx < 0 or idx >= len(methods):
+                return False
+        except ValueError:
+            return False
+
+        _, cmd, available = methods[idx]
+        if not available:
+            print("  Selected method is not available. Skipping.")
+            return False
+
+        print(f"  Installing with: {cmd}")
+
+        # Split the command string into parts
+        shell = sys.platform != "win32"
+        if sys.platform == "win32" and not cmd.startswith("scoop") and not cmd.startswith("choco"):
+            shell = True  # npm install -g works via cmd on win
+
+        if "|" in cmd:
+            # Piped commands: `curl ... | bash`
+            try:
+                subprocess.run(cmd, shell=True, check=True)
+                print("  Installation completed!")
+                return True
+            except subprocess.CalledProcessError:
+                print("  Installation failed.")
+                return False
+        else:
+            parts = cmd.split()
+            try:
+                subprocess.run(parts, check=True)
+                print("  Installation completed!")
+                return True
+            except subprocess.CalledProcessError:
+                print("  Installation failed.")
+                return False
+
+    # ── Step 1: Check server ────────────────────────────
+
     print(f"  Checking server at {base_url}/v1/models...")
     if not server_running():
         if args.start_server or (args.start_server is False and sys.stdin.isatty()):
@@ -684,7 +836,8 @@ def _run_launch_opencode(args):
     else:
         print("  Server is running!")
 
-    # 2. Fetch models
+    # ── Step 2: Fetch models ─────────────────────────────
+
     models = fetch_models()
     if not models:
         print("Warning: No models found on server (or couldn't reach it)")
@@ -694,7 +847,7 @@ def _run_launch_opencode(args):
             mid = m.get("id", "?")
             print(f"    - {mid}")
 
-    # Deduplicate (v1/models lists with and without ",gpu" suffix)
+    # Deduplicate (v1/models may list with and without ",gpu" suffix)
     seen = set()
     unique_models = []
     for m in models:
@@ -704,7 +857,8 @@ def _run_launch_opencode(args):
             seen.add(base)
             unique_models.append(base)
 
-    # 3. Build config
+    # ── Step 3: Build config ──────────────────────────────
+
     model_configs = {}
     for mid in unique_models:
         name = mid.replace("--", "/")
@@ -716,9 +870,10 @@ def _run_launch_opencode(args):
             },
         }
 
+    default_model_id = unique_models[0] if unique_models else "gemma-4-E4B-it"
     provider_config = {
         "$schema": "https://opencode.ai/config.json",
-        "model": f"litert/{unique_models[0]}" if unique_models else "litert/gemma-4-E4B-it",
+        "model": f"litert/{default_model_id}",
         "provider": {
             "litert": {
                 "npm": "@ai-sdk/openai-compatible",
@@ -736,17 +891,16 @@ def _run_launch_opencode(args):
         },
     }
 
-    # 4. Write config
+    # ── Step 4: Write config ──────────────────────────────
+
     config_dir = Path(config_dir)
     config_dir.mkdir(parents=True, exist_ok=True)
     if config_path.exists():
         try:
             answer = input(f"  Overwrite {config_path}? [y/N] ").strip().lower()
             if answer not in ("y", "yes"):
-                # Write to a backup instead
                 config_path = config_dir / "opencode-litert.jsonc"
                 print(f"  Writing to {config_path} instead")
-                backup = True
         except (EOFError, KeyboardInterrupt):
             print()
             return
@@ -756,34 +910,87 @@ def _run_launch_opencode(args):
     config_path.write_text(_json.dumps(provider_config, indent=2), encoding="utf-8")
     print(f"  Config written: {config_path}")
 
-    # 5. Print instructions
-    if unique_models:
-        default_model = f"litert/{unique_models[0]}"
-    else:
-        default_model = "litert/gemma-4-E4B-it"
+    # ── Step 5: Locate or install OpenCode ────────────────
+
+    default_model = f"litert/{default_model_id}"
+
+    if args.no_open:
+        sep = "-" * 50
+        print()
+        print(f"  {sep}")
+        print("  Config ready! Run manually:")
+        print()
+        print(f"    opencode --model {default_model}")
+        print()
+        print(f"  {sep}")
+        print()
+        return
+
+    opencode_path = detect_opencode()
+
+    if not opencode_path:
+        print()
+        print("  OpenCode not found on this system.")
+        print()
+        if sys.stdin.isatty():
+            try:
+                answer = input("  Install now? [Y/n] ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                answer = "n"
+            if answer in ("", "y", "yes"):
+                if not install_opencode():
+                    print()
+                    print(f"  Install manually: {suggest_install_cmd()}")
+                    print(f"  Then run: opencode --model {default_model}")
+                    print()
+                    return
+                # Re-check after install
+                opencode_path = detect_opencode()
+                if not opencode_path:
+                    print()
+                    print(f"  Installed but not found in PATH yet.")
+                    print(f"  Run manually: opencode --model {default_model}")
+                    print()
+                    return
+            else:
+                print()
+                print(f"  Install: {suggest_install_cmd()}")
+                print(f"  Then run: opencode --model {default_model}")
+                print()
+                return
+        else:
+            print()
+            print(f"  Install: {suggest_install_cmd()}")
+            print(f"  Then run: opencode --model {default_model}")
+            print()
+            return
+
+    # ── Step 6: Launch ────────────────────────────────────
 
     sep = "-" * 50
     print()
     print(f"  {sep}")
-    print("  OpenCode is ready to use with litert-ollama!")
-    print()
-    print(f"    opencode --model {default_model}")
-    print()
-    print("  Select your model in the TUI with: /models")
+    print(f"  Launching OpenCode with {default_model}")
     print(f"  {sep}")
     print()
 
-    # 6. Optionally launch OpenCode
-    if not args.no_open:
-        import shutil
-        opencode_path = shutil.which("opencode")
-        if opencode_path:
-            print("  Launching OpenCode...")
-            os.execvp(opencode_path, [opencode_path, "--model", default_model])
-        else:
-            print("  OpenCode not found in PATH. Install it:")
-            print("    curl -fsSL https://opencode.ai/install | bash")
-            print("  Then run: opencode --model", default_model)
+    # Launch in a new process group so it stays alive after we exit
+    try:
+        proc = subprocess.Popen(
+            [opencode_path, "--model", default_model],
+            stdin=sys.stdin,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+        )
+        proc.wait()
+    except FileNotFoundError:
+        print(f"  Error: Could not launch {opencode_path}")
+        print(f"  Run manually: opencode --model {default_model}")
+    except KeyboardInterrupt:
+        print()
+        print("  OpenCode closed.")
+        print()
 
 
 if __name__ == "__main__":
