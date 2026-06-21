@@ -22,7 +22,7 @@ class GenerateRequest(BaseModel):
 
 class Message(BaseModel):
     role: str
-    content: str = ""
+    content: str | list[dict[str, Any]] | None = ""
     images: list[str] = Field(default_factory=list)
     tool_calls: list[dict[str, Any]] | None = None
     tool_name: str | None = None

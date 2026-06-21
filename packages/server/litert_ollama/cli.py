@@ -609,6 +609,47 @@ def _run_interactive(args):
         messages.append({"role": "assistant", "content": response})
 
 
+def _detect_servers(preferred_port: int) -> dict:
+    """Detect running litert-ollama and Ollama servers on common ports.
+
+    Returns a dict like {"litert-ollama": 11435, "ollama": 11434}.
+    """
+    import json as _json
+    import urllib.request
+
+    candidates = [preferred_port]
+    for p in [11434, 11435, 11433]:
+        if p not in candidates:
+            candidates.append(p)
+
+    result: dict[str, int] = {}
+
+    for p in candidates:
+        if "litert-ollama" in result and "ollama" in result:
+            break
+        if "litert-ollama" not in result:
+            try:
+                req = urllib.request.Request(f"http://127.0.0.1:{p}/")
+                with urllib.request.urlopen(req, timeout=2) as resp:
+                    data = _json.loads(resp.read().decode())
+                    if data.get("name") == "LiteRT-Ollama":
+                        result["litert-ollama"] = p
+                        continue
+            except Exception:
+                pass
+        if "ollama" not in result:
+            try:
+                req = urllib.request.Request(f"http://127.0.0.1:{p}/api/version")
+                with urllib.request.urlopen(req, timeout=2) as resp:
+                    data = _json.loads(resp.read().decode())
+                    if "version" in data:
+                        result["ollama"] = p
+            except Exception:
+                pass
+
+    return result
+
+
 def _run_launch_opencode(args):
     import json as _json
     import shutil
@@ -622,6 +663,48 @@ def _run_launch_opencode(args):
 
     config_dir = args.config_dir or Path.home() / ".config" / "opencode"
     config_path = Path(config_dir) / "opencode.jsonc"
+
+    # ── Auto-detect: avoid port confusion with Ollama ──
+    using_defaults = args.host == settings.host and args.port == settings.port
+    if using_defaults:
+        servers = _detect_servers(port)
+        if "litert-ollama" in servers and "ollama" in servers:
+            print()
+            print(f"  LiteRT-Ollama (port {servers['litert-ollama']}) and Ollama (port {servers['ollama']}) are both running.")
+            try:
+                choice = input("  Which backend do you want to use? [litert/ollama] ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                choice = ""
+            if choice == "ollama":
+                port = servers["ollama"]
+                print(f"  → Using Ollama on port {port}")
+            else:
+                port = servers["litert-ollama"]
+                print(f"  → Using LiteRT-Ollama on port {port}")
+            host = "127.0.0.1"
+            base_url = f"http://{host}:{port}"
+        elif "litert-ollama" in servers:
+            port = servers["litert-ollama"]
+            host = "127.0.0.1"
+            base_url = f"http://{host}:{port}"
+        elif "ollama" in servers:
+            print()
+            print(f"  LiteRT-Ollama server not found — Ollama detected on port {servers['ollama']}.")
+            try:
+                choice = input("  Use Ollama as the backend for OpenCode? [Y/n] ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                choice = "n"
+            if choice in ("", "y", "yes"):
+                port = servers["ollama"]
+                host = "127.0.0.1"
+                base_url = f"http://{host}:{port}"
+                print(f"  → Using Ollama on port {port}")
+            else:
+                alt = 11435 if port == 11434 else port + 1
+                print(f"  Port {port} is occupied by Ollama — using LiteRT-Ollama on port {alt}.")
+                port = alt
+                host = "127.0.0.1"
+                base_url = f"http://{host}:{port}"
 
     # ── helpers ─────────────────────────────────────────
 
